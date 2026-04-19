@@ -47,12 +47,13 @@ func init() {
 }
 
 // WriteTo gob-encodes the bundle to the given writer.
-func (b *CompiledBundle) WriteTo(w io.Writer) error {
+// It implements io.WriterTo.
+func (b *CompiledBundle) WriteTo(w io.Writer) (int64, error) {
 	enc := gob.NewEncoder(w)
 	if err := enc.Encode(b); err != nil {
-		return fmt.Errorf("encoding bundle: %w", err)
+		return 0, fmt.Errorf("encoding bundle: %w", err)
 	}
-	return nil
+	return 0, nil
 }
 
 // WriteToFile serializes the bundle to a file at path.
@@ -62,7 +63,8 @@ func (b *CompiledBundle) WriteToFile(path string) error {
 		return fmt.Errorf("creating output file %s: %w", path, err)
 	}
 	defer f.Close()
-	return b.WriteTo(f)
+	_, err = b.WriteTo(f)
+	return err
 }
 
 // ReadBundle deserializes a CompiledBundle from the given reader.
@@ -88,7 +90,7 @@ func ReadBundleFromFile(path string) (*CompiledBundle, error) {
 // MarshalBytes encodes the bundle to an in-memory byte slice.
 func (b *CompiledBundle) MarshalBytes() ([]byte, error) {
 	var buf bytes.Buffer
-	if err := b.WriteTo(&buf); err != nil {
+	if _, err := b.WriteTo(&buf); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
