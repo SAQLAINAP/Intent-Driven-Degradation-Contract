@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # dg-engine Prometheus metrics endpoint
+  - job_name: "dg-engine"
+    static_configs:
+      - targets:
+          # host.docker.internal resolves to the host machine on Docker Desktop (macOS/Windows).
+          # On Linux, replace with the host IP (e.g. 172.17.0.1).
+          - "host.docker.internal:9090"
+    metrics_path: /metrics

@@ -1,0 +1,25 @@
+# Development config — fast hysteresis for demos and testing.
+# DO NOT use in production (no hysteresis = tier flapping under load oscillation).
+signal_bus:
+  tick_interval: 1s
+  stale_signal_timeout: 30s
+
+evaluator:
+  up_hysteresis: 3s     # 3s instead of 30s — transitions happen quickly
+  down_hysteresis: 5s   # 5s instead of 90s
+
+gate:
+  slack_webhook_url: ""
+  callback_base_url: "http://localhost:9292"
+  auth_token: ""
+
+audit:
+  output: stdout
+  format: ndjson
+
+metrics:
+  prometheus_port: 9090
+
+k8s:
+  namespace: default
+  leader_election: false

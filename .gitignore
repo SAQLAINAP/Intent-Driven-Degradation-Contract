@@ -1,0 +1,20 @@
+# Compiled binaries
+dg
+dg-engine
+demo-app
+
+# Compiled policy bundles
+*.dg
+
+# Go build artifacts
+*.test
+*.out
+coverage.out
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp

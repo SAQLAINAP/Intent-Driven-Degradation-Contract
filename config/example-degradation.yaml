@@ -1,0 +1,78 @@
+service: api-gateway
+version: "1.0.0"
+
+signals:
+  - id: rps
+    source: prometheus
+    poll_cadence: 2s
+  - id: pod_ceiling
+    source: prometheus
+    poll_cadence: 5s
+  - id: db_latency_p99
+    source: prometheus
+    poll_cadence: 3s
+  - id: s3_error_rate
+    source: prometheus
+    poll_cadence: 5s
+  - id: mem_pressure
+    source: proc
+    poll_cadence: 5s
+
+tiers:
+  - name: nominal
+    when:
+      rps: { lt: 800 }
+    behavior:
+      mode: full_service
+
+  - name: warm
+    when:
+      all_of:
+        - rps: { gte: 800, lt: 1500 }
+    behavior:
+      mode: full_service
+      disable: [recommendations, analytics]
+
+  - name: hot
+    when:
+      all_of:
+        - rps: { gte: 1500, lt: 2000 }
+        - pod_ceiling: { gte: 0.85 }
+    behavior:
+      mode: full_service
+      disable: [recommendations, analytics, uploads]
+
+  - name: critical
+    when:
+      any_of:
+        - rps: { gte: 2000 }
+        - db_latency_p99: { gte: 2000 }
+    human_gate:
+      notify: ["slack:#incidents", "pagerduty"]
+      wait: 45s
+      on_timeout: execute_policy
+      on_response: await_instruction
+    behavior:
+      mode: read_only
+      queue_writes:
+        max_depth: 2000
+        ttl: 120s
+
+  - name: survival
+    when:
+      any_of:
+        - rps: { gte: 10000 }
+        - mem_pressure: { gte: 0.95 }
+    human_gate:
+      notify: ["slack:#incidents", "pagerduty"]
+      wait: 30s
+      on_timeout: escalate
+      on_response: await_instruction
+    behavior:
+      mode: static_fallback
+
+blast_radius:
+  depends_on: [auth-service, user-db]
+  cascade_to: [notification-service]
+  isolation_boundary: payment-service
+  recovery_sla_seconds: 120

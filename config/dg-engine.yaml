@@ -1,0 +1,23 @@
+signal_bus:
+  tick_interval: 2s
+  stale_signal_timeout: 30s
+
+evaluator:
+  up_hysteresis: 30s
+  down_hysteresis: 90s
+
+gate:
+  slack_webhook_url: ${SLACK_WEBHOOK_URL}
+  callback_base_url: https://dg.yourdomain.com
+  auth_token: ${GATE_AUTH_TOKEN}
+
+audit:
+  output: stdout   # or: /var/log/dg/audit.ndjson
+  format: ndjson
+
+metrics:
+  prometheus_port: 9090
+
+k8s:
+  namespace: default
+  leader_election: false   # set true for multi-replica control plane
