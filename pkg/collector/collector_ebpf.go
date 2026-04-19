@@ -1,4 +1,4 @@
-//go:build linux,ebpf
+//go:build linux && ebpf
 
 // Extended kernel-metric collector for Linux. Build with -tags ebpf to activate.
 //
