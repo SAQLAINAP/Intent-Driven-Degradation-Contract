@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: iddc-demo
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        generateValue: false
+        value: "10000"

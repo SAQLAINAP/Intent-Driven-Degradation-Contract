@@ -1,7 +1,7 @@
-# Compiled binaries
-dg
-dg-engine
-demo-app
+# Compiled binaries (root-level only)
+/dg
+/dg-engine
+/demo-app
 
 # Compiled policy bundles
 *.dg
