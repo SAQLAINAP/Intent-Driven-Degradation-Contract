@@ -1,0 +1,48 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for the report! Please don't include secrets (webhook URLs, tokens). For security issues, use SECURITY.md instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands, curl calls or console clicks. `make smoke`-style steps are ideal.
+      placeholder: |
+        1. dg compile my-policy.yaml -o policy.dg
+        2. dg-engine --policy policy.dg --config config/dg-engine-dev.yaml
+        3. curl -XPOST localhost:9191/inject -d '{"rps": 2500}'
+    validations:
+      required: true
+  - type: textarea
+    id: policy
+    attributes:
+      label: Policy (degradation.yaml)
+      render: yaml
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Engine log / audit events / CLI output.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `dg --version` (or the commit SHA).
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [compiler / dg CLI, engine / evaluator, human gate, sidecar / flags, write queue, web console, Kubernetes, Docker / Helm, docs, other]

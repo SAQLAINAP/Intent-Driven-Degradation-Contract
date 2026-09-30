@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/security/advisories/new
+    about: Report security issues privately — please don't open a public issue.
+  - name: Roadmap
+    url: https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/blob/main/docs/ROADMAP.md
+    about: Planned work that's open for contributors.

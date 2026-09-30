@@ -1,16 +1,35 @@
 # IDDC: Intent-Driven Degradation Contracts
 
 [![CI](https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/actions/workflows/ci.yml/badge.svg)](https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/SAQLAINAP/Intent-Driven-Degradation-Contract?include_prereleases&sort=semver)](https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/releases)
+[![Go Reference](https://pkg.go.dev/badge/github.com/SAQLAINAP/Intent-Driven-Degradation-Contract.svg)](https://pkg.go.dev/github.com/SAQLAINAP/Intent-Driven-Degradation-Contract)
 [![Go Report Card](https://goreportcard.com/badge/github.com/SAQLAINAP/Intent-Driven-Degradation-Contract)](https://goreportcard.com/report/github.com/SAQLAINAP/Intent-Driven-Degradation-Contract)
-[![Go Version](https://img.shields.io/badge/go-1.26-blue)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Go 1.26+](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go)](go.mod)
 
-IDDC is a declarative failure-topology framework for distributed systems. You define how your service degrades under stress at design time, before anything fails.
+**Decide how your service degrades before it has to.** IDDC is a declarative failure-topology framework for distributed systems. You write a degradation contract next to your deployment, the compiler proves it has no gaps or contradictions, and a small runtime engine enforces it: it switches feature flags, buffers writes, scales pods, and waits for a human before making risky moves.
 
 ![IDDC console with a human gate holding the hot → critical transition](docs/screenshots/console-gate.png)
+
+<table>
+<tr>
+<td width="33%"><strong>📜 Contract, not runbook</strong><br>Tiers, thresholds and behaviour live in <code>degradation.yaml</code>, reviewed like code and validated in CI.</td>
+<td width="33%"><strong>🧮 Compiler that catches 3 AM bugs</strong><br>Tier gaps, undeclared signals, impossible ranges, dependency cycles, TTL vs recovery-SLA mismatches.</td>
+<td width="33%"><strong>🧑‍✈️ Human gate</strong><br>Risky transitions are held until an operator approves, overrides or escalates, or until the timeout policy runs.</td>
+</tr>
+<tr>
+<td><strong>🚦 Feature flags from policy</strong><br>A sidecar serves <code>/flags</code>; apps react to <code>mode</code> and <code>features</code>, never to tier names.</td>
+<td><strong>🖥️ Built-in console</strong><br>Live ladder, signal sliders, gate controls, event log and a policy lab, with no extra process.</td>
+<td><strong>📈 Observable</strong><br>Prometheus metrics, NDJSON audit log, Grafana dashboard, Slack and PagerDuty notifications.</td>
+</tr>
+</table>
+
+> **Status:** pre-1.0. The DSL and the HTTP APIs may change between minor versions; see [CHANGELOG.md](CHANGELOG.md). Feedback and contributions are very welcome.
 
 **Contents:**
 [The problem](#the-problem) ·
 [How it works](#how-it-works) ·
+[Install](#install) ·
 [Quick start](#quick-start) ·
 [Screenshots](#screenshots) ·
 [The console](#the-console-gui) ·
@@ -22,7 +41,8 @@ IDDC is a declarative failure-topology framework for distributed systems. You de
 [Testing](#testing) ·
 [Repository layout](#repository-layout) ·
 [Known limitations](#known-limitations) ·
-[Contributing](#contributing)
+[Contributing](#contributing) ·
+[Roadmap](docs/ROADMAP.md)
 
 ---
 
@@ -64,6 +84,18 @@ The engine follows five rules:
 | **Write queue** | Tiers with `queue_writes:` buffer writes (`POST /write`). Leaving such a tier drains the queue. |
 
 ---
+
+## Install
+
+| Method | Command |
+|--------|---------|
+| **Go** (1.26+) | `go install github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/cmd/dg@latest`<br>`go install github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/cmd/dg-engine@latest` |
+| **Binaries** | Download an archive for Linux, macOS or Windows from [Releases](https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/releases). Each archive has `dg`, `dg-engine`, `demo-app`, example configs, and `checksums.txt`. |
+| **Docker** | `docker run -p 8080:8080 -p 9191:9191 ghcr.io/saqlainap/iddc` (demo), or override the command with `bin/dg-engine …` |
+| **Helm** | `helm install iddc ./deploy/helm/dg` (see [Kubernetes](#deployment-on-kubernetes)) |
+| **Source** | `git clone https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract.git && cd Intent-Driven-Degradation-Contract && make build-all` → `bin/` |
+
+Check the install with `dg --version`.
 
 ## Quick start
 
@@ -285,7 +317,7 @@ When the evaluator proposes moving *up* into a gated tier, the enforcer keeps th
 | timeout + `escalate` | Most degraded tier is applied and locked |
 | signals move elsewhere first | The gate is **superseded** and the new proposal is handled normally |
 
-Gate routes are served on the gate port (`:9292`) and mirrored on the control port for the console. If `gate.auth_token` is set, every response must include `"token": "…"`.
+Gate routes are served on the gate port (`:9292`) and mirrored on the control port for the console. If `gate.auth_token` is set, every response must include `"token": "…"`. A missing or wrong token returns `401`; answering when no gate is open returns `409`.
 
 ![engine log: transition, gate held, approval](docs/screenshots/terminal-engine.png)
 
@@ -410,7 +442,9 @@ k8s:
 ## Testing
 
 ```bash
+make fmt          # gofmt
 make vet          # go vet
+make lint         # golangci-lint v2
 make test         # unit tests with the race detector
 make test-cover   # the same, with a coverage summary
 make smoke        # end-to-end smoke test (needs curl + python3)
@@ -436,22 +470,32 @@ CI runs vet, unit tests, the smoke test, and example-policy validation on every 
 
 ## Deployment on Kubernetes
 
+The Helm chart in [`deploy/helm/dg`](deploy/helm/dg) runs `dg-engine` as a Deployment and Service from the `ghcr.io/saqlainap/iddc` image. It runs as non-root with a read-only root filesystem and has health probes.
+
 ```bash
+# 1. Compile your policy and store it in the cluster
 dg compile degradation.yaml -o policy.dg
 kubectl create configmap dg-policy --from-file=policy.dg
+
+# 2. Optional secrets (missing keys are simply left unset)
 kubectl create secret generic dg-secrets \
+  --from-literal=GATE_AUTH_TOKEN=$(openssl rand -hex 16) \
   --from-literal=SLACK_WEBHOOK_URL=https://hooks.slack.com/... \
-  --from-literal=PAGERDUTY_ROUTING_KEY=<key> \
-  --from-literal=GATE_AUTH_TOKEN=$(openssl rand -hex 16)
+  --from-literal=PAGERDUTY_ROUTING_KEY=<key>
+
+# 3. Install; engine settings live under engineConfig in values.yaml
+helm install iddc ./deploy/helm/dg \
+  --set engineConfig.metrics.prometheus_url=http://prometheus-server.monitoring \
+  --set engineConfig.k8s.deployment_name=api-gateway
 ```
 
-Run `dg-engine --policy /etc/dg/policy.dg --config /etc/dg/dg-engine.yaml` as a sidecar container. Your app then reads `http://localhost:8081/flags`. A Helm chart skeleton lives in `deploy/helm/dg`.
+Applications read `http://iddc-engine.<namespace>:8081/flags`. To run the engine next to your app instead, add a container with the same image and arguments to your pod (`/app/bin/dg-engine --policy … --config …`) and read `http://localhost:8081/flags`. Kubernetes enforcement needs RBAC to patch the target Deployment and its HPA. The chart doesn't create that role yet (see the [roadmap](docs/ROADMAP.md)).
 
 ---
 
 ## Known limitations
 
-These are known gaps, and good first contributions:
+These are known gaps, and good first contributions. Each has an entry in the [roadmap](docs/ROADMAP.md):
 
 - **Gap detection** covers ladders where every tier compares the same single signal. Compound (`all_of`/`any_of`) ladders aren't analysed, so a hole like `rps=1600, pod_ceiling=0.1` in the example policy (which falls back to `nominal`) isn't reported. Use `dg simulate` or the policy lab to check those.
 - **Kubernetes actions** are keyed on the tier names `warm`, `hot`, `critical` and `survival`. Other names get no replica changes. The reconciler, Slack and PagerDuty paths are not covered by automated tests (they need a cluster or credentials).
@@ -488,119 +532,43 @@ These are known gaps, and good first contributions:
 ├── deploy/
 │   ├── docker/              Dockerfile for the demo image
 │   ├── observability/       docker-compose for Prometheus + Grafana, with provisioning
-│   └── helm/                Helm chart skeleton
+│   └── helm/dg/             Helm chart for dg-engine
 ├── scripts/
 │   ├── demo.sh              starts engine + demo shop (make demo, Docker image)
-│   └── smoke.sh             end-to-end smoke test (make smoke, CI)
+│   ├── smoke.sh             end-to-end smoke test (make smoke, CI)
+│   └── release.sh           cross-platform release archives (make release-local, release workflow)
 ├── docs/screenshots/        images used in this README
-├── .github/workflows/       CI: vet, tests, smoke test, Docker build, policy validation
+├── internal/version/        build version stamped by the Makefile / release script
+├── .github/                 CI and release workflows, issue/PR templates, Dependabot
 ├── Makefile                 `make` lists every target
-└── render.yaml              Render blueprint (must live at the root)
+├── render.yaml              Render blueprint (must live at the root)
+├── CHANGELOG.md  CONTRIBUTING.md  CODE_OF_CONDUCT.md  SECURITY.md  LICENSE
+└── docs/ROADMAP.md          planned work, open to contributors
 ```
 
-Build output (`bin/`) is gitignored. `make clean` removes it, along with binaries that older versions of the Makefile left in the root.
+Build output (`bin/`, `dist/`) is gitignored. `make clean` removes it, along with binaries that older versions of the Makefile left in the root.
 
 ---
 
 ## Contributing
 
-Contributions are welcome and appreciated. IDDC is an open project — whether you're fixing a bug, adding an integration, or improving the docs, your work matters.
+Contributions of every size are welcome: bug reports, docs, new signal sources, compiler checks, console features.
 
-### Getting started
+- Read **[CONTRIBUTING.md](CONTRIBUTING.md)** for the dev setup, the checks CI runs (`make fmt vet lint test smoke`), and a map of where things live.
+- Look for issues labelled [`good first issue`](https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/labels/good%20first%20issue), or pick something from the **[roadmap](docs/ROADMAP.md)**.
+- Report bugs and propose features with the [issue forms](https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/issues/new/choose).
+- Report security problems privately, as described in **[SECURITY.md](SECURITY.md)**.
 
-1. **Fork** the repository and clone your fork:
-   ```bash
-   git clone https://github.com/<your-username>/Intent-Driven-Degradation-Contract.git
-   ```
-2. **Create a branch** for your change:
-   ```bash
-   git checkout -b feat/your-feature-name
-   ```
-3. **Make your changes**, add tests, and verify everything passes:
-   ```bash
-   make vet && make test && make smoke
-   ```
-4. **Open a pull request** against `main`. Describe what you changed and why.
+Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-### Guidelines
+## Releases
 
-- Keep pull requests focused — one logical change per PR
-- Add tests for any new behaviour (aim to maintain or improve coverage)
-- Follow existing code style — run `gofmt` and `go vet` before committing
-- Update documentation if you change a public API or add a new feature
-- For large changes, open an issue first to discuss the approach
-
-### Reporting issues
-
-Please file issues on [GitHub Issues](https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/issues) with:
-- A clear description of the problem or feature request
-- Steps to reproduce (for bugs)
-- Expected vs actual behaviour
-
----
-
-## Roadmap & Contribution Opportunities
-
-The following enhancements are planned and open for contributors. Pick one, open an issue to claim it, and go.
-
-### Core engine
-
-1. **OTel trace context propagation through tier transitions**  
-   Emit OpenTelemetry spans for every tier transition and gate event. Each `TierTransition` becomes a span with signal values as attributes, enabling trace-based root cause analysis in Jaeger, Tempo, or any OTel-compatible backend.
-
-2. **eBPF-native signal collection (no /proc polling)**  
-   Replace the current `/proc` delta-sampling in `collector_ebpf.go` with actual eBPF programs attached to kernel tracepoints. Use `cilium/ebpf` or `libbpf-go` for CO-RE portability. Candidates: TCP retransmit events, scheduler latency (BPF_PROG_TYPE_TRACEPOINT), and memory reclaim pressure.
-
-3. **Multi-signal hysteresis — require N of M signals to confirm a tier**  
-   The current evaluator advances on the first matching tier condition. Add a `quorum:` field to tier specs so an operator can require, e.g., 2 out of 3 signals to sustain the threshold before a transition confirms.
-
-4. **WASM policy evaluation sandbox**  
-   Compile the condition evaluator to WebAssembly so policies can be evaluated in any environment (browser, edge, non-Go services) without deploying the full engine. Useful for client-side preview and multi-language SDK support.
-
-### Observability integrations
-
-5. **Grafana dashboard as code + alert rules**  
-   Extend `deploy/observability/grafana/` with a complete, importable Grafana dashboard covering all IDDC metrics: tier history timeline, signal sparklines, gate outcomes, queue depth, and transition heatmap. Include pre-built Grafana alert rules for stuck gates and queue overflow.
-
-6. **Datadog integration — tier as a service-level objective**  
-   Add a `DatadogSLOReporter` that maps IDDC tier history to a Datadog SLO. When the tier is `nominal` the SLO accrues uptime; degraded tiers accrue error budget. Expose tier as a Datadog service tag so it appears automatically in APM service maps.
-
-7. **OpenTelemetry Collector receiver**  
-   Build an OTLP-compatible receiver so any OTel-instrumented service can push its metrics directly to IDDC as signal values, without a Prometheus intermediary. Enables IDDC adoption in services that already export metrics via OTel SDKs.
-
-8. **Loki log annotation on tier transitions**  
-   On each `TierTransition`, push a log annotation to Grafana Loki so engineers can correlate application log spikes with tier changes on a single timeline — similar to Grafana's annotation API but via the Loki push endpoint.
-
-9. **Elastic APM / Kibana integration**  
-   Publish tier transition events to Elasticsearch as structured documents, with a pre-built Kibana index pattern and dashboard. Enables IDDC visibility for teams using the ELK stack rather than Prometheus/Grafana.
-
-10. **AWS CloudWatch Metrics sink**  
-    Add a `CloudWatchReporter` that publishes the active tier and signal values as CloudWatch custom metrics. Allows IDDC-driven Auto Scaling policies and CloudWatch Alarms to react to tier state.
-
-### Policy and workflow
-
-11. **PagerDuty service dependency map export**  
-    Read the `blast_radius.depends_on` / `cascade_to` graph from a compiled `.dg` bundle and push it to the PagerDuty Services API as a technical service dependency map. Gives on-call engineers a live dependency view that matches the declared IDDC topology.
-
-12. **GitHub Actions policy diff comment**  
-    Build a GitHub Actions workflow that runs the compiler on both base and head branches, diffs the compiled bundles, and posts a PR comment summarising what changed: new tiers, modified thresholds, added signals, removed gates. Makes policy reviews as readable as code reviews.
-
-13. **ArgoCD / Flux GitOps plugin**  
-    Implement a Kubernetes Custom Resource Definition (`DegradationPolicy`) and a controller that watches for policy changes in Git, recompiles, and hot-reloads the engine without downtime. Enables full GitOps for degradation policies.
-
-14. **Slack interactive component approvals**  
-    Replace the current Slack plain-text instructions with Slack Block Kit interactive buttons (`/gate/approve`, `/gate/override`). The operator clicks a button in Slack; the Slack interactivity endpoint calls back to IDDC. No copy-pasting curl commands during an incident.
-
-15. **Policy language server (LSP)**  
-    Implement a Language Server Protocol server for `degradation.yaml` files. Provides schema validation, autocomplete for signal IDs and tier names, and inline diagnostics in VS Code and other LSP-compatible editors as you type — before you even run the compiler.
-
----
+Versions follow [SemVer](https://semver.org/), and every change is recorded in [CHANGELOG.md](CHANGELOG.md). Pushing a `v*` tag runs the [release workflow](.github/workflows/release.yml), which publishes binaries for Linux, macOS and Windows with checksums, plus the multi-arch `ghcr.io/saqlainap/iddc` image.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+IDDC is released under the [MIT License](LICENSE).
 
 ## Maintainer
 
-**Saqlain Ahmed** ([@SAQLAINAP](https://github.com/SAQLAINAP))  
-Pull requests, issues, and forks are all welcome.
+**Saqlain Ahmed** ([@SAQLAINAP](https://github.com/SAQLAINAP)). Issues, pull requests and forks are all welcome. If IDDC is useful to you, a ⭐ helps others find it.
