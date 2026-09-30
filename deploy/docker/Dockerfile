@@ -4,7 +4,7 @@
 # Build from the repository root:
 #   docker build -f deploy/docker/Dockerfile -t iddc-demo .
 #   docker run -p 8080:8080 -p 9191:9191 iddc-demo
-FROM golang:1.26 AS builder
+FROM golang:1.27 AS builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
