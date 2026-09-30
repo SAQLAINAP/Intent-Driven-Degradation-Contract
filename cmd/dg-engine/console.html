@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDDC Console</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%232563eb'/%3E%3C/svg%3E">
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--line:#e3e6ea;--text:#1f2328;--muted:#6a737d;--accent:#2563eb;--warn:#b45309;--warnbg:#fff7e6;--ok:#15803d;--bad:#b91c1c}
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--line)}
+  header h1{font-size:16px;margin:0}
+  header .meta{color:var(--muted);font-size:12px}
+  header .spacer{flex:1}
+  .pill{display:inline-block;padding:3px 12px;border-radius:999px;color:#fff;font-weight:600;font-size:13px}
+  .chip{display:inline-block;padding:1px 8px;border-radius:6px;font-size:12px;border:1px solid var(--line);background:#fafbfc;margin:2px 4px 2px 0}
+  .chip.on{border-color:#bbf7d0;background:#f0fdf4;color:var(--ok)}
+  .chip.off{border-color:#fecaca;background:#fef2f2;color:var(--bad);text-decoration:line-through}
+  .chip.gate{border-color:#fde68a;background:var(--warnbg);color:var(--warn)}
+  main{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:16px;padding:16px 20px;max-width:1280px;margin:0 auto}
+  @media (max-width:900px){main{grid-template-columns:1fr}}
+  .col{display:flex;flex-direction:column;gap:16px;min-width:0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:0 0 10px}
+  .wide{grid-column:1/-1}
+  table{width:100%;border-collapse:collapse}
+  td,th{padding:7px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{font-size:12px;color:var(--muted);font-weight:600}
+  tr.applied td{background:#eef4ff}
+  tr.proposed td{background:var(--warnbg)}
+  .tiername{display:flex;align-items:center;gap:8px;font-weight:600;white-space:nowrap}
+  .dot{width:10px;height:10px;border-radius:50%;flex:none}
+  .when{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#374151}
+  .tag{font-size:11px;color:var(--muted)}
+  button{font:inherit;border:1px solid var(--line);background:#fff;border-radius:6px;padding:5px 10px;cursor:pointer}
+  button:hover{border-color:#c5cad1;background:#f3f4f6}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#1d4ed8}
+  button.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+  button.small{padding:2px 8px;font-size:12px}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  input,select,textarea{font:inherit;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:#fff}
+  .sig{display:grid;grid-template-columns:130px 1fr 90px 70px;gap:10px;align-items:center;padding:5px 0}
+  .sig label{font-family:ui-monospace,Menlo,monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis}
+  .sig .live{font-size:12px;color:var(--muted);text-align:right}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+  .gatebox{border:1px solid #fcd34d;background:var(--warnbg);border-radius:8px;padding:12px}
+  .gatebox .big{font-size:18px;font-weight:700;margin-bottom:4px}
+  .count{font-variant-numeric:tabular-nums;font-weight:700;color:var(--warn)}
+  .muted{color:var(--muted)}
+  .bar{height:8px;background:#eef0f3;border-radius:4px;overflow:hidden;margin:6px 0}
+  .bar > div{height:100%;background:var(--accent)}
+  .log{max-height:260px;overflow:auto}
+  .log td{font-size:12px}
+  textarea{width:100%;min-height:220px;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  .diag{font-family:ui-monospace,Menlo,monospace;font-size:12px;margin:4px 0}
+  .diag.ERROR{color:var(--bad)} .diag.WARN{color:var(--warn)}
+  #toast{position:fixed;bottom:16px;right:16px;background:#111827;color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:420px}
+  #toast.show{opacity:.95}
+  .offline{background:#fef2f2;color:var(--bad);padding:6px 20px;border-bottom:1px solid #fecaca;display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>IDDC Console</h1>
+  <span class="meta" id="svc">loading…</span>
+  <span class="spacer"></span>
+  <span class="muted">enforced tier</span> <span class="pill" id="appliedPill">—</span>
+  <span id="proposedNote" class="chip gate" hidden></span>
+  <span id="lockNote" class="chip" hidden></span>
+</header>
+<div class="offline" id="offline">Engine unreachable. Retrying…</div>
+
+<main>
+  <div class="col">
+    <section class="card">
+      <h2>Tier ladder <span class="tag">— the most degraded matching tier wins</span></h2>
+      <table>
+        <thead><tr><th>Tier</th><th>When</th><th>Behavior</th><th></th></tr></thead>
+        <tbody id="ladder"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Signals</h2>
+      <div id="signals"></div>
+      <div class="row">
+        <button class="primary" id="applySignals">Inject values</button>
+        <button id="zeroSignals">Reset all to 0</button>
+        <span class="tag" id="sigNote"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Event log</h2>
+      <div class="log"><table><tbody id="events"></tbody></table></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card">
+      <h2>Human gate</h2>
+      <div id="gate"></div>
+    </section>
+
+    <section class="card">
+      <h2>Feature flags <span class="tag" id="flagsTier"></span></h2>
+      <div id="flags"></div>
+    </section>
+
+    <section class="card" id="queueCard">
+      <h2>Write queue</h2>
+      <div id="queue"></div>
+      <div class="row"><button class="small" id="enqueue">Enqueue test write</button></div>
+    </section>
+
+    <section class="card">
+      <h2>Manual override</h2>
+      <div class="row">
+        <select id="ovTier"></select>
+        <input id="ovMin" type="number" min="1" value="10" style="width:70px"> min
+        <button id="ovGo">Force &amp; lock</button>
+        <button id="ovRelease">Release lock</button>
+      </div>
+    </section>
+  </div>
+
+  <section class="card wide">
+    <details id="lab">
+      <summary><strong>Policy lab</strong> <span class="tag">— validate and simulate a degradation.yaml without deploying it</span></summary>
+      <div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:16px;margin-top:10px">
+        <div>
+          <textarea id="labYaml" spellcheck="false"></textarea>
+          <div class="row">
+            <button class="primary" id="labValidate">Validate</button>
+            <input id="labSignals" placeholder="rps=2500 mem_pressure=0.4" style="flex:1;min-width:180px">
+            <button id="labSimulate">Simulate</button>
+          </div>
+        </div>
+        <div id="labOut" class="muted">Paste a policy and press Validate. Simulate with an empty editor uses the running policy.</div>
+      </div>
+    </details>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let policy = null, lastStatus = null, dirty = {};
+
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'class') el.className = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined) el.append(kid.nodeType ? kid : String(kid));
+  return el;
+}
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600); }
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const text = await r.text();
+  if (!r.ok) throw new Error(text.trim() || r.statusText);
+  try { return JSON.parse(text); } catch { return text; }
+}
+const post = (path, body) => api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: typeof body === 'string' ? body : JSON.stringify(body || {})});
+function tierColor(name) {
+  if (!policy) return '#6b7280';
+  const i = policy.tiers.findIndex(t => t.name === name), n = policy.tiers.length;
+  if (i < 0) return '#6b7280';
+  const hue = n > 1 ? 130 - (130 * i / (n - 1)) : 130;
+  return `hsl(${hue} 65% ${i === n - 1 ? 32 : 40}%)`;
+}
+const fmt = v => (Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 1000) / 1000).toString();
+const dur = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's'; };
+const ago = ts => dur(Date.now() - new Date(ts));
+const until = ts => dur(new Date(ts) - Date.now());
+
+// ── policy (static) ──────────────────────────────────────────────────────────
+async function loadPolicy() {
+  policy = await api('/api/policy');
+  $('svc').textContent = `${policy.service} v${policy.version} · policy ${policy.checksum}`;
+  document.title = `IDDC · ${policy.service}`;
+  $('ovTier').replaceChildren(...policy.tiers.map(t => h('option', {value: t.name}, t.name)));
+  const box = $('signals');
+  box.replaceChildren(...policy.signals.map(s => {
+    const range = h('input', {type: 'range', min: 0, max: s.max, step: s.step, value: 0, id: 'r_' + s.id, disabled: !s.injectable});
+    const num = h('input', {type: 'number', min: 0, step: s.step, value: 0, id: 'n_' + s.id, disabled: !s.injectable});
+    range.oninput = () => { num.value = range.value; dirty[s.id] = true; };
+    num.oninput = () => { range.value = num.value; dirty[s.id] = true; };
+    return h('div', {class: 'sig', title: s.injectable ? '' : `collected from ${s.source}; not injectable`},
+      h('label', {for: 'n_' + s.id}, s.id), range, num, h('span', {class: 'live', id: 'l_' + s.id}, '—'));
+  }));
+  if (!policy.signals.some(s => s.injectable)) $('sigNote').textContent = 'All signals come from live sources — injection disabled.';
+}
+
+function renderLadder(st) {
+  const rows = policy.tiers.map(t => {
+    const isApplied = st.applied.tier === t.name, isHeld = st.applied.pending_tier === t.name;
+    const badges = [];
+    badges.push(h('span', {class: 'chip'}, t.mode));
+    t.disable.forEach(f => badges.push(h('span', {class: 'chip off'}, f)));
+    if (t.queue_writes) badges.push(h('span', {class: 'chip'}, `queue ≤${t.queue_writes.max_depth} · ttl ${t.queue_writes.ttl}`));
+    if (t.gate) badges.push(h('span', {class: 'chip gate', title: 'human gate'}, `gate ${t.gate.wait} → ${t.gate.on_timeout}`));
+    const btn = t.scenario
+      ? h('button', {class: 'small', title: 'Inject: ' + JSON.stringify(t.scenario), onclick: () => inject(t.scenario, `scenario → ${t.name}`)}, 'Simulate')
+      : h('span', {class: 'tag'}, 'no simple scenario');
+    return h('tr', {class: isApplied ? 'applied' : isHeld ? 'proposed' : ''},
+      h('td', null, h('div', {class: 'tiername'}, h('span', {class: 'dot', style: `background:${tierColor(t.name)}`}), t.name,
+        isApplied ? h('span', {class: 'tag'}, '● enforced') : null, isHeld ? h('span', {class: 'tag'}, '⏸ held by gate') : null)),
+      h('td', {class: 'when'}, t.when),
+      h('td', null, badges),
+      h('td', null, btn));
+  });
+  $('ladder').replaceChildren(...rows);
+}
+
+// ── live status ──────────────────────────────────────────────────────────────
+function renderStatus(st) {
+  const pill = $('appliedPill');
+  pill.textContent = st.applied.tier; pill.style.background = tierColor(st.applied.tier);
+  pill.title = `${st.applied.mode} · since ${ago(st.applied.since)} ago`;
+  const pn = $('proposedNote');
+  pn.hidden = !st.applied.pending_tier;
+  pn.textContent = st.applied.pending_tier ? `⏸ ${st.applied.pending_tier} awaiting gate` : '';
+  const ln = $('lockNote');
+  ln.hidden = !st.lock;
+  if (st.lock) ln.textContent = `🔒 locked to ${st.lock.tier} · ${until(st.lock.until)} left`;
+
+  renderLadder(st);
+
+  for (const s of policy.signals) {
+    const v = st.signals[s.id];
+    $('l_' + s.id).textContent = 'live ' + (v === undefined ? '—' : fmt(v)) + (st.stale[s.id] ? ' (stale)' : '');
+    if (!dirty[s.id] && v !== undefined) { $('r_' + s.id).value = v; $('n_' + s.id).value = v; }
+  }
+
+  $('flagsTier').textContent = `— tier ${st.flags.tier} · ${st.flags.mode || ''}`;
+  const names = Object.keys(st.flags.features).sort();
+  $('flags').replaceChildren(...(names.length ? names.map(f => h('span', {class: 'chip ' + (st.flags.features[f] ? 'on' : 'off')}, f))
+    : [h('span', {class: 'muted'}, 'This policy disables no named features.')]));
+
+  const q = st.queue;
+  $('queueCard').hidden = !q.enabled;
+  if (q.enabled) {
+    $('queue').replaceChildren(
+      h('div', null, h('strong', null, q.active ? 'Buffering writes' : 'Inactive'), h('span', {class: 'muted'}, q.active ? ' — this tier queues writes' : ' — writes go straight to the backend')),
+      h('div', {class: 'bar'}, h('div', {style: `width:${Math.min(100, 100 * q.depth / q.max)}%`})),
+      h('div', {class: 'muted'}, `${q.depth} / ${q.max} queued · ${q.dropped} dropped`));
+    $('enqueue').disabled = !q.active;
+  }
+  renderGate(st.gate);
+}
+
+function renderGate(g) {
+  const box = $('gate');
+  if (g.state !== 'pending') {
+    box.replaceChildren(h('div', {class: 'muted'}, 'No gate open.'),
+      g.last_outcome ? h('div', {class: 'tag', style: 'margin-top:4px'}, `Last gate: ${g.last_tier} → ${g.last_outcome}`) : null);
+    box._pending = null;
+    return;
+  }
+  const left = Math.max(0, Math.round((new Date(g.deadline) - Date.now()) / 1000));
+  if (box._pending === g.opened_at) { box.querySelector('.count').textContent = left + 's'; return; }
+  box._pending = g.opened_at;
+  const tierSel = h('select', null, policy.tiers.map(t => h('option', {value: t.name, selected: t.name === g.from_tier}, t.name)));
+  const mins = h('input', {type: 'number', min: 1, value: 10, style: 'width:60px'});
+  const token = h('input', {type: 'password', placeholder: 'auth token (if set)', style: 'width:150px'});
+  const send = (path, body) => post(path, {...body, token: token.value}).then(() => toast('Gate: ' + path.split('/').pop())).then(refresh).catch(e => toast(e.message));
+  box.replaceChildren(h('div', {class: 'gatebox'},
+    h('div', {class: 'big'}, `${g.from_tier} → ${g.tier}`),
+    h('div', null, 'Transition held for operator decision. On timeout: ', h('strong', null, g.on_timeout), ' in ', h('span', {class: 'count'}, left + 's')),
+    h('div', {class: 'row'},
+      h('button', {class: 'primary', onclick: () => send('/gate/approve', {})}, `Approve ${g.tier}`),
+      h('button', {class: 'danger', onclick: () => send('/gate/escalate', {message: 'escalated from console'})}, 'Escalate')),
+    h('div', {class: 'row'}, 'Override to', tierSel, 'for', mins, 'min',
+      h('button', {onclick: () => send('/gate/override', {target_tier: tierSel.value, duration_min: +mins.value})}, 'Override')),
+    h('div', {class: 'row'}, token)));
+}
+
+async function refreshEvents() {
+  const evs = await api('/api/events?n=40');
+  $('events').replaceChildren(...(evs.length ? evs.map(e => h('tr', null,
+    h('td', {class: 'muted', style: 'white-space:nowrap'}, new Date(e.ts).toLocaleTimeString()),
+    h('td', null, h('strong', null, e.event.replace(/_/g, ' '))),
+    h('td', null, e.from_tier && e.to_tier ? `${e.from_tier} → ${e.to_tier}` : (e.from_tier && e.tier ? `${e.from_tier} → ${e.tier}` : (e.tier || ''))),
+    h('td', {class: 'muted'}, e.reason || e.gate_outcome || (e.count !== undefined ? `${e.count} writes` : ''))))
+    : [h('tr', null, h('td', {class: 'muted'}, 'No events yet. Inject signals to trigger a transition.'))]));
+}
+
+async function refresh() {
+  try {
+    const st = await api('/api/status');
+    $('offline').style.display = 'none';
+    lastStatus = st; renderStatus(st);
+  } catch (e) { $('offline').style.display = 'block'; }
+}
+
+// ── actions ──────────────────────────────────────────────────────────────────
+async function inject(vals, label) {
+  try { await post('/inject', vals); dirty = {}; toast(`Injected ${label || JSON.stringify(vals)} — hysteresis applies before the tier moves`); refresh(); }
+  catch (e) { toast(e.message); }
+}
+$('applySignals').onclick = () => {
+  const vals = {};
+  policy.signals.filter(s => s.injectable).forEach(s => vals[s.id] = parseFloat($('n_' + s.id).value) || 0);
+  inject(vals, 'signal values');
+};
+$('zeroSignals').onclick = () => { const v = {}; policy.signals.filter(s => s.injectable).forEach(s => v[s.id] = 0); inject(v, 'all zeros'); };
+$('enqueue').onclick = () => post('/write', {id: 'console-' + Date.now(), payload: 'test'}).then(r => toast(`Queued (depth ${r.depth})`)).then(refresh).catch(e => toast(e.message));
+$('ovGo').onclick = () => post('/override', {tier: $('ovTier').value, duration_min: +$('ovMin').value}).then(r => toast(`Locked to ${r.locked_tier} for ${r.duration_min}m`)).then(refresh).catch(e => toast(e.message));
+$('ovRelease').onclick = () => post('/override/release').then(() => toast('Lock released')).then(refresh).catch(e => toast(e.message));
+
+// ── policy lab ───────────────────────────────────────────────────────────────
+$('labYaml').value = `service: demo
+version: "1.0.0"
+signals:
+  - id: rps
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+    behavior: { mode: full_service }
+  - name: warm
+    when: { rps: { gte: 1200, lt: 2000 } }   # gap: 800–1200 is uncovered
+    behavior: { mode: full_service, disable: [recommendations] }
+  - name: critical
+    when: { rps: { gte: 2000 } }
+    behavior: { mode: read_only }
+`;
+function renderValidation(v) {
+  const out = [];
+  if (v.parse_error) out.push(h('div', {class: 'diag ERROR'}, 'YAML error: ' + v.parse_error));
+  v.diagnostics.forEach(d => out.push(h('div', {class: 'diag ' + d.severity}, `${d.severity} [${d.category}] ${d.message}`)));
+  if (v.valid) out.push(h('div', {style: 'color:var(--ok);font-weight:600;margin-top:6px'}, `✓ valid — ${v.policy.tiers.length} tiers: ${v.policy.tiers.map(t => t.name).join(' → ')}`));
+  else if (!v.parse_error) out.push(h('div', {style: 'color:var(--bad);font-weight:600;margin-top:6px'}, '✗ would not compile'));
+  return out;
+}
+$('labValidate').onclick = async () => {
+  try { $('labOut').replaceChildren(...renderValidation(await post('/api/validate', $('labYaml').value))); }
+  catch (e) { toast(e.message); }
+};
+$('labSimulate').onclick = async () => {
+  const signals = {};
+  for (const part of $('labSignals').value.split(/[\s,]+/).filter(Boolean)) {
+    const [k, v] = part.split(/[=:]/);
+    if (!k || v === undefined || isNaN(parseFloat(v))) return toast(`Bad signal "${part}" — use id=value`);
+    signals[k] = parseFloat(v);
+  }
+  try {
+    const r = await post('/api/simulate', {yaml: $('labYaml').value, signals});
+    const out = r.validation ? renderValidation(r.validation) : [h('div', {class: 'muted'}, 'Using the running policy.')];
+    if (r.tier) {
+      const feats = Object.entries(r.features || {}).map(([f, on]) => h('span', {class: 'chip ' + (on ? 'on' : 'off')}, f));
+      out.push(h('div', {style: 'margin-top:10px'}, 'Signals ', h('code', null, JSON.stringify(signals)), ' → ', h('strong', null, r.tier), ` (${r.mode})`), h('div', null, feats));
+    }
+    $('labOut').replaceChildren(...out);
+  } catch (e) { toast(e.message); }
+};
+
+// ── boot ─────────────────────────────────────────────────────────────────────
+(async function boot() {
+  try { await loadPolicy(); } catch (e) { $('offline').style.display = 'block'; return setTimeout(boot, 2000); }
+  refresh(); refreshEvents();
+  setInterval(refresh, 1000);
+  setInterval(refreshEvents, 2000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+# Malformed YAML (unterminated flow map). The parser must reject it cleanly.
+service: broken
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 }

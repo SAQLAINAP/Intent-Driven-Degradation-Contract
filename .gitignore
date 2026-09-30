@@ -1,4 +1,7 @@
-# Compiled binaries (root-level only)
+# Build output (make build-all writes here)
+/bin/
+
+# Binaries from older layouts that built into the repo root
 /dg
 /dg-engine
 /demo-app

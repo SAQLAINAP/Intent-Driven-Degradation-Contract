@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-engine
+  labels:
+    app: dg-engine
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: dg-engine
+  template:
+    metadata:
+      labels:
+        app: dg-engine
+    spec:
+      containers:
+        - name: dg-engine
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.metrics.port }}
+              name: metrics
+          env:
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dg-secrets
+                  key: SLACK_WEBHOOK_URL
+            - name: GATE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dg-secrets
+                  key: GATE_AUTH_TOKEN
+          volumeMounts:
+            - name: policy
+              mountPath: /etc/dg
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: policy
+          configMap:
+            name: dg-policy

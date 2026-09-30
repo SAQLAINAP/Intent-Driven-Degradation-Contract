@@ -3,7 +3,6 @@ package gate
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"sync"
 	"time"
 
@@ -20,6 +19,9 @@ const (
 	OutcomeOverridden Outcome = "overridden"
 	OutcomeEscalated  Outcome = "escalated"
 	OutcomeTimedOut   Outcome = "timed_out"
+	// OutcomeSuperseded means the gate was cancelled before anyone answered,
+	// typically because signals moved to a different tier while it was open.
+	OutcomeSuperseded Outcome = "superseded"
 )
 
 // GateResponse is sent by an operator via the HTTP callback API.
@@ -31,120 +33,171 @@ type GateResponse struct {
 	Token       string
 }
 
+// Decision is what Fire returns once the gate closes.
+type Decision struct {
+	Outcome    Outcome
+	TargetTier string        // set for overrides
+	Duration   time.Duration // override lock duration requested by the operator (0 = caller default)
+	Message    string        // free-text note sent with an escalation
+}
+
 // Config holds gate configuration loaded from dg-engine.yaml.
 type Config struct {
-	SlackWebhookURL      string
-	CallbackBaseURL      string
-	AuthToken            string
-	PagerDutyRoutingKey  string
+	SlackWebhookURL     string
+	CallbackBaseURL     string
+	AuthToken           string
+	PagerDutyRoutingKey string
+}
+
+// Status is a point-in-time view of the gate, served by /gate/status.
+type Status struct {
+	State       string             `json:"state"` // "pending" or "idle"
+	Tier        string             `json:"tier,omitempty"`
+	FromTier    string             `json:"from_tier,omitempty"`
+	OnTimeout   string             `json:"on_timeout,omitempty"`
+	OpenedAt    *time.Time         `json:"opened_at,omitempty"`
+	Deadline    *time.Time         `json:"deadline,omitempty"`
+	Signals     map[string]float64 `json:"signals,omitempty"`
+	LastOutcome string             `json:"last_outcome,omitempty"`
+	LastTier    string             `json:"last_tier,omitempty"`
+	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
 // HumanGate implements the dead man's switch pattern for a single service.
+// At most one gate is pending at a time; firing a new one supersedes routing
+// of responses to the old one.
 type HumanGate struct {
-	cfg      Config
-	logger   *audit.Logger
-	mu       sync.Mutex
-	pending  *pendingGate
-	server   *http.Server
+	cfg    Config
+	logger *audit.Logger
+
+	mu          sync.Mutex
+	pending     *pendingGate
+	lastOutcome Outcome
+	lastTier    string
+	updatedAt   time.Time
 }
 
 type pendingGate struct {
-	tier    string
-	signals map[string]float64
-	respCh  chan GateResponse
+	tier      string
+	fromTier  string
+	onTimeout string
+	openedAt  time.Time
+	deadline  time.Time
+	signals   map[string]float64
+	respCh    chan GateResponse
 }
 
 // NewHumanGate creates a gate with the given config and audit logger.
 func NewHumanGate(cfg Config, logger *audit.Logger) *HumanGate {
 	return &HumanGate{
-		cfg:    cfg,
-		logger: logger,
+		cfg:       cfg,
+		logger:    logger,
+		updatedAt: time.Now(),
 	}
 }
 
-// Fire sends a Slack notification and blocks until the operator responds
-// or the gate spec's Wait timeout expires.
-// Returns the final outcome and, for overrides, the target tier.
-func (g *HumanGate) Fire(ctx context.Context, svc string, spec *policy.GateSpec, signals map[string]float64) (Outcome, string) {
+// Fire notifies operators that svc wants to move from fromTier into tier and
+// blocks until an operator responds, the spec's Wait elapses (OutcomeTimedOut),
+// or ctx is cancelled (OutcomeSuperseded).
+func (g *HumanGate) Fire(ctx context.Context, svc, fromTier, tier string, spec *policy.GateSpec, signals map[string]float64) Decision {
 	if spec == nil {
-		return OutcomeTimedOut, ""
+		return Decision{Outcome: OutcomeTimedOut}
 	}
 
-	// Register this gate as pending so the callback server can route responses.
-	respCh := make(chan GateResponse, 1)
-	g.mu.Lock()
-	g.pending = &pendingGate{
-		tier:    spec.OnTimeout,
-		signals: signals,
-		respCh:  respCh,
+	now := time.Now()
+	p := &pendingGate{
+		tier:      tier,
+		fromTier:  fromTier,
+		onTimeout: spec.OnTimeout,
+		openedAt:  now,
+		deadline:  now.Add(spec.Wait),
+		signals:   signals,
+		respCh:    make(chan GateResponse, 1),
 	}
+	g.mu.Lock()
+	g.pending = p
+	g.updatedAt = now
 	g.mu.Unlock()
 
 	// Send notifications to all configured backends (best-effort; don't block gate on failure).
 	if g.cfg.SlackWebhookURL != "" {
-		msg := buildSlackMessage(svc, "critical", signals, spec.Wait, g.cfg.CallbackBaseURL)
+		msg := buildSlackMessage(svc, tier, signals, spec.Wait, g.cfg.CallbackBaseURL)
 		if err := sendSlack(g.cfg.SlackWebhookURL, msg, 3); err != nil {
 			fmt.Printf("gate: slack notification failed: %v\n", err)
 		}
 	}
 	if g.cfg.PagerDutyRoutingKey != "" {
-		if err := sendPagerDuty(g.cfg.PagerDutyRoutingKey, svc, "critical", signals); err != nil {
+		if err := sendPagerDuty(g.cfg.PagerDutyRoutingKey, svc, tier, signals); err != nil {
 			fmt.Printf("gate: pagerduty notification failed: %v\n", err)
 		}
 	}
 
 	g.logger.Log(audit.Event{
-		Type:    audit.EventGateFired,
-		Service: svc,
-		Tier:    "critical",
-		Signals: signals,
+		Type:     audit.EventGateFired,
+		Service:  svc,
+		Tier:     tier,
+		FromTier: fromTier,
+		Signals:  signals,
 	})
 
 	// Dead man's switch: block until response or timeout.
-	var outcome Outcome
-	var overrideTier string
+	var d Decision
+	timer := time.NewTimer(spec.Wait)
+	defer timer.Stop()
 
 	select {
-	case resp := <-respCh:
+	case resp := <-p.respCh:
 		switch resp.Action {
-		case "approve":
-			outcome = OutcomeApproved
 		case "override":
-			outcome = OutcomeOverridden
-			overrideTier = resp.TargetTier
+			d = Decision{
+				Outcome:    OutcomeOverridden,
+				TargetTier: resp.TargetTier,
+				Duration:   time.Duration(resp.DurationMin) * time.Minute,
+			}
 		case "escalate":
-			outcome = OutcomeEscalated
-			overrideTier = "survival"
+			d = Decision{Outcome: OutcomeEscalated, Message: resp.Message}
 		default:
-			outcome = OutcomeApproved
+			d = Decision{Outcome: OutcomeApproved}
 		}
-	case <-time.After(spec.Wait):
-		outcome = OutcomeTimedOut
+	case <-timer.C:
+		d = Decision{Outcome: OutcomeTimedOut}
 	case <-ctx.Done():
-		outcome = OutcomeTimedOut
+		d = Decision{Outcome: OutcomeSuperseded}
 	}
 
 	g.mu.Lock()
-	g.pending = nil
+	if g.pending == p { // a newer gate may already have replaced this one
+		g.pending = nil
+	}
+	g.lastOutcome = d.Outcome
+	g.lastTier = tier
+	g.updatedAt = time.Now()
 	g.mu.Unlock()
 
-	g.logger.Log(audit.Event{
-		Type:    outcomeToEventType(outcome),
-		Service: svc,
-		Tier:    "critical",
-		Signals: signals,
-	})
+	ev := audit.Event{
+		Type:        outcomeToEventType(d.Outcome),
+		Service:     svc,
+		Tier:        tier,
+		FromTier:    fromTier,
+		Signals:     signals,
+		GateOutcome: string(d.Outcome),
+	}
+	if d.TargetTier != "" {
+		target := d.TargetTier
+		ev.OverrideTier = &target
+	}
+	g.logger.Log(ev)
 
-	metrics.GateEventsTotal.WithLabelValues(svc, string(outcome)).Inc()
+	metrics.GateEventsTotal.WithLabelValues(svc, string(d.Outcome)).Inc()
 
 	// Resolve the PagerDuty incident now that the gate has closed.
 	if g.cfg.PagerDutyRoutingKey != "" {
-		if err := resolvePagerDuty(g.cfg.PagerDutyRoutingKey, svc, "critical"); err != nil {
+		if err := resolvePagerDuty(g.cfg.PagerDutyRoutingKey, svc, tier); err != nil {
 			fmt.Printf("gate: pagerduty resolve failed: %v\n", err)
 		}
 	}
 
-	return outcome, overrideTier
+	return d
 }
 
 // Respond delivers an operator response to the currently pending gate.
@@ -163,8 +216,34 @@ func (g *HumanGate) Respond(resp GateResponse) error {
 	case p.respCh <- resp:
 		return nil
 	default:
-		return fmt.Errorf("gate response channel full")
+		return fmt.Errorf("gate already answered")
 	}
+}
+
+// Status returns the current gate state.
+func (g *HumanGate) Status() Status {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st := Status{
+		State:       "idle",
+		LastOutcome: string(g.lastOutcome),
+		LastTier:    g.lastTier,
+		UpdatedAt:   g.updatedAt,
+	}
+	if p := g.pending; p != nil {
+		opened, deadline := p.openedAt, p.deadline
+		st.State = "pending"
+		st.Tier = p.tier
+		st.FromTier = p.fromTier
+		st.OnTimeout = p.onTimeout
+		if st.OnTimeout == "" {
+			st.OnTimeout = "execute_policy"
+		}
+		st.OpenedAt = &opened
+		st.Deadline = &deadline
+		st.Signals = p.signals
+	}
+	return st
 }
 
 func outcomeToEventType(o Outcome) audit.EventType {
@@ -173,6 +252,10 @@ func outcomeToEventType(o Outcome) audit.EventType {
 		return audit.EventGateApproved
 	case OutcomeOverridden:
 		return audit.EventGateOverridden
+	case OutcomeEscalated:
+		return audit.EventGateEscalated
+	case OutcomeSuperseded:
+		return audit.EventGateSuperseded
 	default:
 		return audit.EventGateTimedOut
 	}

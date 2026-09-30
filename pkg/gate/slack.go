@@ -15,8 +15,8 @@ type slackMessage struct {
 }
 
 type slackBlock struct {
-	Type string      `json:"type"`
-	Text *slackText  `json:"text,omitempty"`
+	Type   string      `json:"type"`
+	Text   *slackText  `json:"text,omitempty"`
 	Fields []slackText `json:"fields,omitempty"`
 }
 
@@ -49,7 +49,7 @@ func buildSlackMessage(svc, tier string, signals map[string]float64, wait time.D
 				Type: "section",
 				Text: &slackText{
 					Type: "mrkdwn",
-					Text: fmt.Sprintf("*Service:* %s\n*Target Tier:* `%s`\n*Auto-executes in:* %s\n\n*Signals:*\n%s",
+					Text: fmt.Sprintf("*Service:* %s\n*Target Tier:* `%s`\n*Decision window:* %s (the on_timeout policy applies if nobody answers)\n\n*Signals:*\n%s",
 						svc, tier, wait, sigText),
 				},
 			},

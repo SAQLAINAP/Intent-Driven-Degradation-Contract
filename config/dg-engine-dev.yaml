@@ -1,8 +1,14 @@
 # Development config — fast hysteresis for demos and testing.
 # DO NOT use in production (no hysteresis = tier flapping under load oscillation).
+server:
+  control_addr: ":9191"   # control API + web console → http://localhost:9191/
+  sidecar_addr: ":8081"
+  gate_addr: ":9292"
+
 signal_bus:
   tick_interval: 1s
   stale_signal_timeout: 30s
+  mode: inject            # every signal is driven by POST /inject (or the console sliders)
 
 evaluator:
   up_hysteresis: 3s     # 3s instead of 30s — transitions happen quickly

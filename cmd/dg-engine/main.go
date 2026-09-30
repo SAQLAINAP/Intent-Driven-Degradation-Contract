@@ -1,32 +1,28 @@
 // Command dg-engine is the IDDC runtime engine.
 //
 // It loads a compiled .dg policy bundle, starts the signal bus and tier
-// evaluator, and enforces tier transitions by calling registered handlers.
+// evaluator, and enforces tier transitions (sidecar flags, write queue,
+// Kubernetes), holding gated transitions for an operator decision.
 //
 // Usage:
 //
-//	dg-engine --policy config/example-degradation.dg [--config config/dg-engine.yaml]
+//	dg-engine --policy policy.dg [--config config/dg-engine.yaml]
 //
-// Endpoints:
+// Servers (addresses configurable under server: in dg-engine.yaml):
 //
-//	POST http://localhost:9191/inject          body: {"rps": 2500}          — inject signal values
-//	GET  http://localhost:9191/signals                                       — view current signal values
-//	POST http://localhost:9191/write           body: {"id":"w1","payload":.} — buffer a write (when queue active)
-//	GET  http://localhost:9191/write/depth                                   — queue depth + drop count
-//	POST http://localhost:9191/override        body: {"tier":"nominal","duration_min":10} — manual tier lock
-//	GET  http://localhost:9090/metrics                                       — Prometheus metrics
-//	POST http://localhost:9292/gate/{approve,override,escalate}             — gate callbacks
-//	GET  http://localhost:8081/flags                                         — sidecar feature flags
-//	GET  http://localhost:8081/tier                                          — current tier state
+//	:9191  control API + web console   (GET / opens the console)
+//	:8081  sidecar                     (GET /flags, /tier, /health)
+//	:9292  gate callbacks              (POST /gate/{approve,override,escalate})
+//	:9090  Prometheus metrics          (GET /metrics)
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	goruntime "runtime"
 	"syscall"
 	"time"
 
@@ -34,8 +30,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"iddc/pkg/audit"
+	"iddc/pkg/collector"
 	"iddc/pkg/compiler"
 	appconfig "iddc/pkg/config"
+	"iddc/pkg/enforcement/enforcer"
 	k8sctl "iddc/pkg/enforcement/k8s"
 	"iddc/pkg/enforcement/sidecar"
 	"iddc/pkg/enforcement/writequeue"
@@ -45,10 +43,6 @@ import (
 	"iddc/pkg/sigfetch"
 )
 
-// gateTimeout is added on top of the gate spec's wait time so the context
-// isn't cancelled before the gate can record its outcome.
-const gateTimeout = 10 * time.Second
-
 func main() {
 	var policyPath string
 	var configPath string
@@ -57,6 +51,7 @@ func main() {
 		Use:   "dg-engine",
 		Short: "IDDC runtime engine — enforces degradation contracts continuously",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			return run(policyPath, configPath)
 		},
 	}
@@ -82,6 +77,9 @@ func run(policyPath, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("loading policy bundle %s: %w", policyPath, err)
 	}
+	if len(bundle.Tiers) == 0 {
+		return fmt.Errorf("policy bundle %s declares no tiers", policyPath)
+	}
 	printBanner(bundle)
 
 	// ── Audit logger ──────────────────────────────────────────────────────────
@@ -90,50 +88,22 @@ func run(policyPath, configPath string) error {
 		return fmt.Errorf("creating audit logger: %w", err)
 	}
 
-	// ── Signal store (injected values for local dev) ──────────────────────────
-	// In production replace with sigfetch.NewPrometheusFetcher() per signal.
+	// ── Signal sources ────────────────────────────────────────────────────────
 	store := sigfetch.NewInjectedStore()
+	fetchers, injectable := buildFetchers(bundle, cfg, store)
 
-	// Seed all declared signals to 0 so the bus starts clean.
-	seed := make(map[string]float64, len(bundle.SignalSources))
-	for _, s := range bundle.SignalSources {
-		seed[s.ID] = 0
-	}
-	store.Set(seed)
-
-	// Build fetcher map — one per declared signal.
-	fetchers := make(map[string]runtime.SignalFetcher, len(bundle.SignalSources))
-	for _, s := range bundle.SignalSources {
-		id := s.ID // capture for closure
-		switch {
-		case s.Source == "http" && s.URL != "":
-			fetchers[id] = runtime.SignalFetcher(sigfetch.NewHTTPFetcher(s.URL, s.Field))
-		case cfg.Metrics.PrometheusURL != "":
-			fetchers[id] = runtime.SignalFetcher(
-				sigfetch.NewPrometheusFetcher(cfg.Metrics.PrometheusURL, prometheusQueryForSignal(id)),
-			)
-		default:
-			fetchers[id] = runtime.SignalFetcher(store.FetcherFor(id))
-		}
-	}
-
-	// ── Human gate ────────────────────────────────────────────────────────────
+	// ── Enforcement components ────────────────────────────────────────────────
 	humanGate := gate.NewHumanGate(gate.Config{
 		SlackWebhookURL:     cfg.Gate.SlackWebhookURL,
 		CallbackBaseURL:     cfg.Gate.CallbackBaseURL,
 		AuthToken:           cfg.Gate.AuthToken,
 		PagerDutyRoutingKey: cfg.Gate.PagerDutyRoutingKey,
 	}, auditLog)
-
-	// ── Sidecar server ────────────────────────────────────────────────────────
-	sidecarSrv := sidecar.NewServer(":8081", cfg.Gate.AuthToken)
-
-	// ── Write queue ───────────────────────────────────────────────────────────
-	// Create a shared queue if any tier declares queue_writes.
+	gateSrv := gate.NewCallbackServer(cfg.Server.GateAddr, humanGate)
+	sidecarSrv := sidecar.NewServer(cfg.Server.SidecarAddr, cfg.Gate.AuthToken)
 	writeQueue := buildWriteQueue(bundle)
 
-	// ── Kubernetes reconciler (optional — enabled when deployment_name is set) ──
-	var k8sReconciler *k8sctl.Reconciler
+	var reconciler enforcer.Reconciler
 	if cfg.K8s.DeploymentName != "" {
 		rec, err := k8sctl.NewReconciler(k8sctl.Config{
 			KubeconfigPath: cfg.K8s.KubeconfigPath,
@@ -143,10 +113,10 @@ func run(policyPath, configPath string) error {
 			MaxPods:        cfg.K8s.MaxPods,
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[k8s] reconciler init failed (k8s enforcement disabled): %v\n", err)
+			fmt.Fprintf(os.Stderr, "[k8s]     reconciler init failed (k8s enforcement disabled): %v\n", err)
 		} else {
-			k8sReconciler = rec
-			fmt.Printf("[k8s]    reconciler ready  namespace=%s  deployment=%s\n",
+			reconciler = rec
+			fmt.Printf("[k8s]     reconciler ready  namespace=%s  deployment=%s\n",
 				cfg.K8s.Namespace, cfg.K8s.DeploymentName)
 		}
 	}
@@ -157,122 +127,113 @@ func run(policyPath, configPath string) error {
 		DownHysteresis: cfg.Evaluator.DownHysteresis,
 		TickInterval:   cfg.SignalBus.TickInterval,
 	}
-	engine := runtime.NewEngine(bundle, fetchers, nil, evalCfg)
-
-	// ── Register tier transition handlers ─────────────────────────────────────
-	engine.RegisterHandler(func(t runtime.TierTransition) {
-		// 1. Audit log.
-		auditLog.Log(audit.Event{
-			Type:     audit.EventTierTransition,
-			Service:  bundle.Service,
-			FromTier: t.From,
-			ToTier:   t.To,
-			Signals:  t.Signals,
-		})
-
-		// 2. Print to terminal.
-		printTransition(t)
-
-		// 3. Update sidecar immediately so feature flags change right away.
-		sidecarSrv.SetTier(t.To, t.Signals)
-		fmt.Printf("[sidecar] flags updated → tier=%s\n", t.To)
-
-		// 4. Write queue: activate on degraded tiers, drain on recovery.
-		if writeQueue != nil {
-			if tierHasQueueWrites(bundle, t.To) {
-				fmt.Printf("[queue]   write buffering ACTIVE (depth=0 → max=%d)\n", writeQueue.MaxDepth())
-			} else if tierHasQueueWrites(bundle, t.From) {
-				// Recovering from a queued tier — drain the buffer.
-				writes := writeQueue.Drain()
-				if len(writes) > 0 {
-					fmt.Printf("[queue]   draining %d buffered writes on recovery to %s\n", len(writes), t.To)
-					// In a real system, replay writes against the backend here.
-				}
-			}
+	var cadences map[string]time.Duration
+	if cfg.SignalBus.Mode == "inject" {
+		// Injected values live in memory, so poll them every tick for snappy demos.
+		cadences = make(map[string]time.Duration, len(bundle.SignalSources))
+		for _, s := range bundle.SignalSources {
+			cadences[s.ID] = cfg.SignalBus.TickInterval
 		}
+	}
+	engine := runtime.NewEngine(bundle, fetchers, cadences, evalCfg)
+	engine.Bus().SetStaleTimeout(cfg.SignalBus.StaleSignalTimeout)
 
-		// 5. K8s reconciler — apply replica/scheduling policy.
-		if k8sReconciler != nil {
-			go func(transition runtime.TierTransition) {
-				ctx2, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				if err := k8sReconciler.Reconcile(ctx2, transition.To); err != nil {
-					fmt.Fprintf(os.Stderr, "[k8s] reconcile tier=%s: %v\n", transition.To, err)
-				}
-			}(t)
-		}
-
-		// 5. Human gate — fire in a separate goroutine so the dispatcher
-		//    is never blocked waiting for an operator response.
-		if spec := tierGateSpec(bundle, t.To); spec != nil {
-			go func(transition runtime.TierTransition, gateSpec *policy.GateSpec) {
-				printGateInstructions(cfg.Gate.SlackWebhookURL, cfg.Gate.CallbackBaseURL, transition.To)
-
-				gateCtx, cancel := context.WithTimeout(
-					context.Background(),
-					gateSpec.Wait+gateTimeout,
-				)
-				defer cancel()
-
-				outcome, overrideTier := humanGate.Fire(gateCtx, bundle.Service, gateSpec, transition.Signals)
-				fmt.Printf("[gate] outcome=%s\n", outcome)
-
-				if overrideTier != "" && overrideTier != transition.To {
-					// Operator chose a different tier — lock the evaluator to it.
-					lockDuration := time.Duration(0)
-					if overrideTier != "" {
-						// Default lock: 10 minutes. Gate override holds until operator re-enables.
-						lockDuration = 10 * time.Minute
-					}
-					engine.LockTier(overrideTier, lockDuration)
-					sidecarSrv.SetTier(overrideTier, transition.Signals)
-					fmt.Printf("[sidecar] override → tier=%s (locked 10m)\n", overrideTier)
-				}
-			}(t, spec)
-		}
+	enf := enforcer.New(enforcer.Config{
+		Bundle:     bundle,
+		Sidecar:    sidecarSrv,
+		Queue:      writeQueue,
+		Reconciler: reconciler,
+		Gate:       humanGate,
+		Locker:     engine,
+		Audit:      auditLog,
+		Out:        os.Stdout,
+		OnGateOpen: func(from, to string, spec *policy.GateSpec) {
+			printGateInstructions(cfg, to)
+		},
 	})
+	engine.RegisterHandler(enf.HandleTransition)
 
 	// ── Context — cancelled by SIGINT/SIGTERM ─────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// ── Start all servers in background goroutines ────────────────────────────
+	// ── Servers ───────────────────────────────────────────────────────────────
+	startServer("[gate]    callbacks listening on "+cfg.Server.GateAddr, gateSrv.Start, ctx)
+	startServer("[sidecar] listening on "+cfg.Server.SidecarAddr, sidecarSrv.Start, ctx)
 
-	startServer("[gate-callback]", ":9292", gate.NewCallbackServer(":9292", humanGate).Start, ctx)
-	startHTTPServer("[sidecar]", ":8081", sidecarSrv.Start, ctx)
-
-	injectSrv := newInjectServer(":9191", store, writeQueue, engine)
-	go serveHTTP(injectSrv, ctx)
-	fmt.Println("[inject]   listening on :9191  (POST /inject | POST /write | GET /signals)")
+	control := &controlAPI{
+		bundle:     bundle,
+		engine:     engine,
+		enforcer:   enf,
+		store:      store,
+		injectable: injectable,
+		queue:      writeQueue,
+		sidecar:    sidecarSrv,
+		gate:       humanGate,
+		gateRoutes: gateSrv.Handler(),
+		audit:      auditLog,
+	}
+	go serveHTTP(&http.Server{Addr: cfg.Server.ControlAddr, Handler: control.routes()}, ctx)
+	fmt.Printf("[control] listening on %s  — web console: http://localhost%s/\n",
+		cfg.Server.ControlAddr, cfg.Server.ControlAddr)
 
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", promhttp.Handler())
-	metricsSrv := &http.Server{
+	go serveHTTP(&http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Metrics.PrometheusPort),
 		Handler: metricsMux,
-	}
-	go serveHTTP(metricsSrv, ctx)
-	fmt.Printf("[metrics]  listening on :%d/metrics\n", cfg.Metrics.PrometheusPort)
+	}, ctx)
+	fmt.Printf("[metrics] listening on :%d/metrics\n", cfg.Metrics.PrometheusPort)
 
 	// ── Start engine (blocks until ctx is cancelled) ──────────────────────────
-	fmt.Printf("\n[engine]   started  service=%s  tiers=%d\n", bundle.Service, len(bundle.Tiers))
-	fmt.Printf("[engine]   current tier: %s\n\n", engine.CurrentTier())
+	fmt.Printf("\n[engine]  started  service=%s  tiers=%d  signal_mode=%s\n",
+		bundle.Service, len(bundle.Tiers), cfg.SignalBus.Mode)
+	fmt.Printf("[engine]  current tier: %s\n\n", engine.CurrentTier())
 	engine.Start(ctx)
 
-	fmt.Println("\n[engine]   shut down cleanly")
+	fmt.Println("\n[engine]  shut down cleanly")
 	return nil
 }
 
-// ─── tier gate lookup ─────────────────────────────────────────────────────────
-
-// tierGateSpec returns the GateSpec for the named tier, or nil if there is none.
-func tierGateSpec(bundle *compiler.CompiledBundle, tierName string) *policy.GateSpec {
-	for _, t := range bundle.Tiers {
-		if t.Name == tierName {
-			return t.GateSpec
-		}
+// buildFetchers picks a fetcher for every declared signal and reports which
+// signals are driven by the injected store (and therefore accept POST /inject).
+func buildFetchers(bundle *compiler.CompiledBundle, cfg *appconfig.Config, store *sigfetch.InjectedStore) (map[string]runtime.SignalFetcher, map[string]bool) {
+	seed := make(map[string]float64, len(bundle.SignalSources))
+	for _, s := range bundle.SignalSources {
+		seed[s.ID] = 0
 	}
-	return nil
+	store.Set(seed)
+
+	proc := collector.NewProcCollector()
+	fetchers := make(map[string]runtime.SignalFetcher, len(bundle.SignalSources))
+	injectable := make(map[string]bool, len(bundle.SignalSources))
+	for _, s := range bundle.SignalSources {
+		id := s.ID
+		source := "injected"
+		switch {
+		case cfg.SignalBus.Mode == "inject":
+		case s.Source == "http" && s.URL != "":
+			fetchers[id] = runtime.SignalFetcher(sigfetch.NewHTTPFetcher(s.URL, s.Field))
+			source = "http " + s.URL
+		case s.Source == "prometheus" && cfg.Metrics.PrometheusURL != "":
+			query := s.Query
+			if query == "" {
+				query = prometheusQueryForSignal(id)
+			}
+			fetchers[id] = runtime.SignalFetcher(sigfetch.NewPrometheusFetcher(cfg.Metrics.PrometheusURL, query))
+			source = "prometheus " + query
+		case s.Source == "proc" && goruntime.GOOS == "linux":
+			fetchers[id] = func(ctx context.Context) (float64, error) { return proc.Collect(ctx, id) }
+			source = "proc"
+		}
+		if fetchers[id] == nil {
+			fetchers[id] = runtime.SignalFetcher(store.FetcherFor(id))
+			injectable[id] = true
+		}
+		fmt.Printf("[signal]  %-16s ← %s\n", id, source)
+	}
+	fmt.Println()
+	return fetchers, injectable
 }
 
 // ─── server helpers ───────────────────────────────────────────────────────────
@@ -280,21 +241,11 @@ func tierGateSpec(bundle *compiler.CompiledBundle, tierName string) *policy.Gate
 type contextStarter func(ctx context.Context) error
 
 // startServer launches a contextStarter (e.g. gate.CallbackServer.Start) in a goroutine.
-func startServer(label, addr string, fn contextStarter, ctx context.Context) {
-	fmt.Printf("%s listening on %s\n", label, addr)
+func startServer(banner string, fn contextStarter, ctx context.Context) {
+	fmt.Println(banner)
 	go func() {
 		if err := fn(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "%s error: %v\n", label, err)
-		}
-	}()
-}
-
-// startHTTPServer is like startServer but for the sidecar which uses the same interface.
-func startHTTPServer(label, addr string, fn contextStarter, ctx context.Context) {
-	fmt.Printf("%s listening on %s\n", label, addr)
-	go func() {
-		if err := fn(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "%s error: %v\n", label, err)
+			fmt.Fprintf(os.Stderr, "%s — error: %v\n", banner, err)
 		}
 	}()
 }
@@ -312,120 +263,6 @@ func serveHTTP(srv *http.Server, ctx context.Context) {
 	}
 }
 
-// ─── inject server ────────────────────────────────────────────────────────────
-
-// newInjectServer creates an HTTP server for local signal injection.
-//
-//	POST /inject        body: {"rps": 2500, "pod_ceiling": 0.9}   — set signal values
-//	GET  /signals                                                  — view current signal values
-//	POST /write         body: {"id":"w1","payload":"..."}          — enqueue a write (when buffering active)
-//	GET  /write/depth                                              — current queue depth
-//	POST /override      body: {"tier":"nominal","duration_min":10} — manual tier lock
-func newInjectServer(addr string, store *sigfetch.InjectedStore, wq *writequeue.Queue, eng *runtime.Engine) *http.Server {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/inject", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST only", http.StatusMethodNotAllowed)
-			return
-		}
-		var vals map[string]float64
-		if err := json.NewDecoder(r.Body).Decode(&vals); err != nil {
-			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		store.Set(vals)
-
-		fmt.Printf("[inject]   ")
-		for k, v := range vals {
-			fmt.Printf("%s=%.2f  ", k, v)
-		}
-		fmt.Println()
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"injected": vals,
-			"ts":       time.Now().Format(time.RFC3339),
-		})
-	})
-
-	mux.HandleFunc("/signals", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(store.Get())
-	})
-
-	// Write queue endpoints (only meaningful when a tier with queue_writes is active).
-	if wq != nil {
-		mux.HandleFunc("/write", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "POST only", http.StatusMethodNotAllowed)
-				return
-			}
-			var req struct {
-				ID      string `json:"id"`
-				Payload string `json:"payload"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			entry := writequeue.Write{
-				ID:      req.ID,
-				Payload: []byte(req.Payload),
-			}
-			if err := wq.Enqueue(entry); err != nil {
-				http.Error(w, err.Error(), http.StatusServiceUnavailable)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"queued": req.ID,
-				"depth":  wq.Depth(),
-			})
-		})
-
-		mux.HandleFunc("/write/depth", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"depth":   wq.Depth(),
-				"dropped": wq.Dropped(),
-			})
-		})
-	}
-
-	// Manual override endpoint: lock the evaluator to a tier for N minutes.
-	if eng != nil {
-		mux.HandleFunc("/override", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "POST only", http.StatusMethodNotAllowed)
-				return
-			}
-			var req struct {
-				Tier        string `json:"tier"`
-				DurationMin int    `json:"duration_min"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			if req.DurationMin <= 0 {
-				req.DurationMin = 10
-			}
-			dur := time.Duration(req.DurationMin) * time.Minute
-			eng.LockTier(req.Tier, dur)
-			fmt.Printf("[override] tier=%s locked for %dm\n", req.Tier, req.DurationMin)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"locked_tier":    req.Tier,
-				"duration_min":   req.DurationMin,
-				"locked_until":   time.Now().Add(dur).Format(time.RFC3339),
-			})
-		})
-	}
-
-	return &http.Server{Addr: addr, Handler: mux}
-}
-
 // ─── display helpers ──────────────────────────────────────────────────────────
 
 func printBanner(b *compiler.CompiledBundle) {
@@ -436,7 +273,7 @@ func printBanner(b *compiler.CompiledBundle) {
 	fmt.Printf("  version : %s\n", b.Version)
 	fmt.Printf("  tiers   : %d\n", len(b.Tiers))
 	fmt.Printf("  signals : %d\n\n", len(b.SignalSources))
-	fmt.Println("  Tier ladder:")
+	fmt.Println("  Tier ladder (most degraded matching tier wins):")
 	for i, t := range b.Tiers {
 		gateStr := ""
 		if t.GateSpec != nil {
@@ -448,45 +285,30 @@ func printBanner(b *compiler.CompiledBundle) {
 }
 
 // printGateInstructions tells the operator what to do when no Slack URL is configured.
-func printGateInstructions(slackURL, callbackBase, tier string) {
-	if slackURL != "" {
+func printGateInstructions(cfg *appconfig.Config, tier string) {
+	if cfg.Gate.SlackWebhookURL != "" {
 		return // Slack will handle notification
 	}
-	base := callbackBase
+	base := cfg.Gate.CallbackBaseURL
 	if base == "" {
-		base = "http://localhost:9292"
+		base = "http://localhost" + cfg.Server.GateAddr
 	}
 	fmt.Printf("\n╔══════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  GATE FIRED — tier: %-28s║\n", tier)
+	fmt.Printf("║  GATE OPEN — tier: %-30s║\n", tier)
 	fmt.Printf("╠══════════════════════════════════════════════════╣\n")
+	fmt.Printf("║  Console :  http://localhost%s/\n", cfg.Server.ControlAddr)
 	fmt.Printf("║  Approve :  POST %s/gate/approve\n", base)
-	fmt.Printf("║             body: {\"tier\":\"%s\"}\n", tier)
-	fmt.Printf("║\n")
 	fmt.Printf("║  Override:  POST %s/gate/override\n", base)
 	fmt.Printf("║             body: {\"target_tier\":\"nominal\",\"duration_min\":10}\n")
-	fmt.Printf("║\n")
 	fmt.Printf("║  Escalate:  POST %s/gate/escalate\n", base)
 	fmt.Printf("║             body: {\"message\":\"paging SRE\"}\n")
 	fmt.Printf("╚══════════════════════════════════════════════════╝\n\n")
 }
 
-func printTransition(t runtime.TierTransition) {
-	ts := time.Now().Format("15:04:05")
-	fmt.Printf("\n┌─ TIER TRANSITION [%s] ─────────────────────────\n", ts)
-	fmt.Printf("│  %s  →  %s\n", t.From, t.To)
-	if len(t.Signals) > 0 {
-		fmt.Printf("│  signals: ")
-		for k, v := range t.Signals {
-			fmt.Printf("%s=%.2f  ", k, v)
-		}
-		fmt.Println()
-	}
-	fmt.Printf("└───────────────────────────────────────────────────\n")
-}
-
 // ─── config helpers ───────────────────────────────────────────────────────────
 
 // prometheusQueryForSignal returns a default PromQL expression for known signal IDs.
+// Declare query: on the signal to override it.
 func prometheusQueryForSignal(signalID string) string {
 	defaults := map[string]string{
 		"rps":            `rate(http_requests_total[1m])`,
@@ -522,8 +344,6 @@ func newAuditLogger(cfg appconfig.AuditConfig) (*audit.Logger, error) {
 	return audit.NewFileLogger(cfg.Output)
 }
 
-// ─── write queue helpers ──────────────────────────────────────────────────────
-
 // buildWriteQueue scans the bundle for the first tier with queue_writes configured
 // and returns a shared Queue, or nil if no tier uses it.
 func buildWriteQueue(bundle *compiler.CompiledBundle) *writequeue.Queue {
@@ -542,14 +362,4 @@ func buildWriteQueue(bundle *compiler.CompiledBundle) *writequeue.Queue {
 		}
 	}
 	return nil
-}
-
-// tierHasQueueWrites reports whether the named tier has queue_writes configured.
-func tierHasQueueWrites(bundle *compiler.CompiledBundle, tierName string) bool {
-	for _, t := range bundle.Tiers {
-		if t.Name == tierName {
-			return t.Behavior.QueueWrites != nil
-		}
-	}
-	return false
 }

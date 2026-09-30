@@ -1,0 +1,14 @@
+# The service lists itself as a dependency, creating a blast-radius cycle. Rejected.
+service: orders
+version: "1.0.0"
+signals:
+  - id: rps
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+    behavior: { mode: full_service }
+  - name: critical
+    when: { rps: { gte: 800 } }
+    behavior: { mode: read_only }
+blast_radius:
+  depends_on: [orders]

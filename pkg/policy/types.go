@@ -16,9 +16,10 @@ type DegradationPolicy struct {
 // Signal declares a named metric that tiers can reference in their conditions.
 type Signal struct {
 	ID          string        `yaml:"id"`
-	Source      string        `yaml:"source,omitempty"`       // "prometheus", "proc", "http"
-	URL         string        `yaml:"url,omitempty"`          // HTTP source: endpoint URL
-	Field       string        `yaml:"field,omitempty"`        // HTTP source: JSON field name
+	Source      string        `yaml:"source,omitempty"` // "prometheus", "proc", "http"
+	URL         string        `yaml:"url,omitempty"`    // HTTP source: endpoint URL
+	Field       string        `yaml:"field,omitempty"`  // HTTP source: JSON field name
+	Query       string        `yaml:"query,omitempty"`  // Prometheus source: PromQL expression
 	PollCadence time.Duration `yaml:"poll_cadence,omitempty"`
 }
 
@@ -45,19 +46,19 @@ type Condition struct {
 // Comparator holds the threshold for a single signal.
 // At most one field should be set.
 type Comparator struct {
-	Lt   *float64 `yaml:"lt,omitempty"`
-	Lte  *float64 `yaml:"lte,omitempty"`
-	Gt   *float64 `yaml:"gt,omitempty"`
-	Gte  *float64 `yaml:"gte,omitempty"`
-	Eq   *float64 `yaml:"eq,omitempty"`
+	Lt  *float64 `yaml:"lt,omitempty"`
+	Lte *float64 `yaml:"lte,omitempty"`
+	Gt  *float64 `yaml:"gt,omitempty"`
+	Gte *float64 `yaml:"gte,omitempty"`
+	Eq  *float64 `yaml:"eq,omitempty"`
 }
 
 // Behavior describes what the system does when a tier is active.
 type Behavior struct {
-	Mode       string      `yaml:"mode,omitempty"` // "full_service", "read_only", "static_fallback"
-	Disable    []string    `yaml:"disable,omitempty"`
+	Mode        string     `yaml:"mode,omitempty"` // "full_service", "read_only", "static_fallback"
+	Disable     []string   `yaml:"disable,omitempty"`
 	QueueWrites *QueueSpec `yaml:"queue_writes,omitempty"`
-	Replicas   *int        `yaml:"replicas,omitempty"`
+	Replicas    *int       `yaml:"replicas,omitempty"`
 }
 
 // QueueSpec configures the write queue used in degraded modes.
@@ -68,10 +69,10 @@ type QueueSpec struct {
 
 // GateSpec defines the human-in-the-loop gate for a tier.
 type GateSpec struct {
-	Notify    []string      `yaml:"notify"`
-	Wait      time.Duration `yaml:"wait"`
-	OnTimeout string        `yaml:"on_timeout"` // "execute_policy", "hold", "escalate"
-	OnResponse string       `yaml:"on_response"` // "await_instruction"
+	Notify     []string      `yaml:"notify"`
+	Wait       time.Duration `yaml:"wait"`
+	OnTimeout  string        `yaml:"on_timeout"`  // "execute_policy", "hold", "escalate"
+	OnResponse string        `yaml:"on_response"` // "await_instruction"
 }
 
 // BlastRadiusConfig declares service dependencies and isolation boundaries.

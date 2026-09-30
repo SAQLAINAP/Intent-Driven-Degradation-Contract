@@ -1,0 +1,19 @@
+# Several authoring mistakes at once: a duplicate tier name, an unknown mode,
+# a bad on_timeout, and a range that can never be true. All are rejected.
+service: shop
+version: "1.0.0"
+signals:
+  - id: rps
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+    behavior: { mode: full_service }
+  - name: nominal
+    when: { rps: { gte: 800, lt: 2000 } }
+    behavior: { mode: readonly }
+  - name: critical
+    when:
+      any_of:
+        - rps: { gte: 2000, lt: 1500 }
+    human_gate: { wait: 30s, on_timeout: panic }
+    behavior: { mode: read_only }

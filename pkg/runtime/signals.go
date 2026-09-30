@@ -21,19 +21,19 @@ type SignalFetcher func(ctx context.Context) (float64, error)
 
 // signalState tracks per-signal metadata inside the bus.
 type signalState struct {
-	lastValue    float64
-	lastFetchAt  time.Time
-	stale        bool
+	lastValue   float64
+	lastFetchAt time.Time
+	stale       bool
 }
 
 // SignalBus runs one goroutine per signal, writing into a shared SignalSnapshot
 // protected by a sync.RWMutex.
 type SignalBus struct {
-	mu            sync.RWMutex
-	snapshot      SignalSnapshot
-	fetchers      map[string]SignalFetcher
-	pollCadence   map[string]time.Duration
-	staleTimeout  time.Duration
+	mu             sync.RWMutex
+	snapshot       SignalSnapshot
+	fetchers       map[string]SignalFetcher
+	pollCadence    map[string]time.Duration
+	staleTimeout   time.Duration
 	defaultCadence time.Duration
 }
 
@@ -54,6 +54,14 @@ func NewSignalBus(fetchers map[string]SignalFetcher, cadences map[string]time.Du
 		pollCadence:    cadences,
 		staleTimeout:   defaultStaleTimeout,
 		defaultCadence: defaultPollCadence,
+	}
+}
+
+// SetStaleTimeout sets how long a signal may fail to refresh before it is marked stale.
+// Call before Start.
+func (b *SignalBus) SetStaleTimeout(d time.Duration) {
+	if d > 0 {
+		b.staleTimeout = d
 	}
 }
 

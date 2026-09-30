@@ -7,10 +7,11 @@ import (
 )
 
 var (
-	// CurrentTier tracks the active degradation tier as a gauge (0=nominal … 4=survival).
+	// CurrentTier exposes exactly one series per service: the enforced tier's
+	// position in the policy ladder (0 = least degraded), labelled with its name.
 	CurrentTier = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "dg_current_tier",
-		Help: "Active degradation tier (0=nominal, 1=warm, 2=hot, 3=critical, 4=survival).",
+		Help: "Ladder index of the enforced degradation tier (0 = least degraded); the tier label names it.",
 	}, []string{"service", "tier"})
 
 	// SignalValue tracks the latest sampled value for each declared signal.
@@ -44,16 +45,9 @@ var (
 	}, []string{"service"})
 )
 
-// TierNames maps tier index to canonical name for the CurrentTier gauge.
-// Index 0 = nominal (least degraded), index N = survival (most degraded).
-var TierNames = []string{"nominal", "warm", "hot", "critical", "survival"}
-
-// TierIndex returns the numeric index for a tier name, or -1 if unknown.
-func TierIndex(name string) float64 {
-	for i, n := range TierNames {
-		if n == name {
-			return float64(i)
-		}
-	}
-	return -1
+// SetCurrentTier replaces the service's dg_current_tier series so only the
+// enforced tier is reported (stale series from earlier tiers are removed).
+func SetCurrentTier(service, tier string, index int) {
+	CurrentTier.DeletePartialMatch(prometheus.Labels{"service": service})
+	CurrentTier.WithLabelValues(service, tier).Set(float64(index))
 }

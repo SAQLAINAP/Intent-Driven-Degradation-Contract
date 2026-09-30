@@ -1,0 +1,15 @@
+# A tier references db_latency_p99, which is not declared under signals:. Rejected.
+service: api-gateway
+version: "1.0.0"
+signals:
+  - id: rps
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+    behavior: { mode: full_service }
+  - name: critical
+    when:
+      any_of:
+        - rps: { gte: 800 }
+        - db_latency_p99: { gte: 2000 }
+    behavior: { mode: read_only }

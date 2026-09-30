@@ -183,3 +183,90 @@ func TestSignalBus_ConcurrentWrite(t *testing.T) {
 		t.Error("expected non-empty snapshot after concurrent writes")
 	}
 }
+
+// exampleLadder mirrors config/example-degradation.yaml's tier conditions.
+var exampleLadder = `
+service: api-gateway
+version: "1.0.0"
+signals:
+  - id: rps
+  - id: pod_ceiling
+  - id: db_latency_p99
+  - id: mem_pressure
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+    behavior: { mode: full_service }
+  - name: warm
+    when: { all_of: [ { rps: { gte: 800, lt: 1500 } } ] }
+    behavior: { mode: full_service }
+  - name: hot
+    when:
+      all_of:
+        - rps: { gte: 1500, lt: 2000 }
+        - pod_ceiling: { gte: 0.85 }
+    behavior: { mode: full_service }
+  - name: critical
+    when:
+      any_of:
+        - rps: { gte: 2000 }
+        - db_latency_p99: { gte: 2000 }
+    behavior: { mode: read_only }
+  - name: survival
+    when:
+      any_of:
+        - rps: { gte: 10000 }
+        - mem_pressure: { gte: 0.95 }
+    behavior: { mode: static_fallback }
+`
+
+// Regression: a milder tier listed earlier must not shadow a more degraded one.
+// Previously the first matching tier won, so survival was unreachable.
+func TestMatchTier_MostDegradedMatchWins(t *testing.T) {
+	bundle := buildBundle(t, exampleLadder)
+	cases := []struct {
+		vals map[string]float64
+		want string
+	}{
+		{map[string]float64{"rps": 100}, "nominal"},
+		{map[string]float64{"rps": 900}, "warm"},
+		{map[string]float64{"rps": 1600, "pod_ceiling": 0.9}, "hot"},
+		{map[string]float64{"rps": 2500}, "critical"},
+		{map[string]float64{"rps": 100, "db_latency_p99": 2500}, "critical"},
+		{map[string]float64{"rps": 100, "mem_pressure": 0.96}, "survival"},
+		{map[string]float64{"rps": 12000}, "survival"},
+		{map[string]float64{"rps": 1600, "pod_ceiling": 0.1}, "nominal"}, // no tier matches → first tier
+	}
+	for _, c := range cases {
+		if got := runtime.MatchTier(bundle, c.vals); got != c.want {
+			t.Errorf("MatchTier(%v) = %q, want %q", c.vals, got, c.want)
+		}
+	}
+}
+
+func TestEvaluator_LockRejectsUnknownTier(t *testing.T) {
+	eval := instantEval(buildBundle(t, fiveLayerPolicy))
+	if err := eval.LockTier("banana", time.Minute); err == nil {
+		t.Error("LockTier accepted an undeclared tier")
+	}
+	if _, _, locked := eval.LockState(); locked {
+		t.Error("failed lock left the evaluator locked")
+	}
+}
+
+func TestEvaluator_LockHoldsThenUnlockResumes(t *testing.T) {
+	eval := instantEval(buildBundle(t, fiveLayerPolicy))
+	if err := eval.LockTier("warm", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if tier, _ := eval.Evaluate(snap(map[string]float64{"rps": 2500})); tier != "warm" {
+		t.Errorf("locked evaluator moved to %q", tier)
+	}
+	if tier, _, locked := eval.LockState(); !locked || tier != "warm" {
+		t.Errorf("LockState = %q %v", tier, locked)
+	}
+	eval.Unlock()
+	if tier, changed := eval.Evaluate(snap(map[string]float64{"rps": 2500})); tier != "critical" || !changed {
+		t.Errorf("after Unlock: tier=%q changed=%v, want critical/true", tier, changed)
+	}
+}

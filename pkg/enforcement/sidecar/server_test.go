@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"iddc/pkg/compiler"
 	"iddc/pkg/enforcement/sidecar"
+	"iddc/pkg/policy"
 )
 
 func newSrv() *sidecar.Server {
@@ -110,5 +112,79 @@ func TestSidecar_Override_WrongToken(t *testing.T) {
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/override", strings.NewReader(body)))
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+func policyServer(t *testing.T, src string) *sidecar.Server {
+	t.Helper()
+	p, err := policy.LoadFromBytes([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := compiler.Compile(p, []byte(src))
+	if err != nil {
+		t.Fatalf("compile: %v %v", err, res.Diagnostics)
+	}
+	srv := sidecar.NewServer(":0", "")
+	srv.UsePolicy(sidecar.PolicyFromBundle(res.Bundle))
+	return srv
+}
+
+const customPolicy = `
+service: blog
+signals: [ { id: rps } ]
+tiers:
+  - name: calm
+    when: { rps: { lt: 100 } }
+    behavior: { mode: full_service }
+  - name: busy
+    when: { rps: { gte: 100, lt: 500 } }
+    behavior: { mode: full_service, disable: [comments] }
+  - name: frozen
+    when: { rps: { gte: 500, lt: 900 } }
+    behavior: { mode: read_only }
+  - name: down
+    when: { rps: { gte: 900 } }
+    behavior: { mode: static_fallback }
+`
+
+// Regression: flags used to be hard-coded for five tier names, ignoring the policy.
+func TestSidecar_FlagsFollowPolicy(t *testing.T) {
+	srv := policyServer(t, customPolicy)
+
+	f := getFlags(t, srv)
+	if f.Tier != "calm" || f.Mode != "full_service" || !f.Features["comments"] {
+		t.Errorf("initial flags = %+v, want calm with comments on", f)
+	}
+	if _, ok := f.Features["recommendations"]; ok {
+		t.Error("features not mentioned by the policy should not appear")
+	}
+
+	srv.SetTier("busy", nil)
+	if f := getFlags(t, srv); f.Features["comments"] {
+		t.Error("comments should be disabled in busy")
+	}
+	srv.SetTier("frozen", nil)
+	if f := getFlags(t, srv); f.Mode != "read_only" || f.Features["comments"] {
+		t.Errorf("read_only tier should disable everything: %+v", f)
+	}
+	if srv.FallbackActive() {
+		t.Error("read_only is not static fallback")
+	}
+	srv.SetTier("down", nil)
+	if !srv.FallbackActive() {
+		t.Error("static_fallback tier should activate the fallback page")
+	}
+}
+
+func TestSidecar_OverrideRejectsUnknownTier(t *testing.T) {
+	srv := policyServer(t, customPolicy)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/override", strings.NewReader(`{"tier":"banana"}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("override to unknown tier = %d, want 400", rec.Code)
+	}
+	if srv.Tier() != "calm" {
+		t.Errorf("tier changed to %q", srv.Tier())
 	}
 }

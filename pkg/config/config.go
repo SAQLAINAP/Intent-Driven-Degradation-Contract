@@ -14,7 +14,8 @@ import (
 
 // Config is the top-level runtime configuration for dg-engine.
 type Config struct {
-	SignalBus  SignalBusConfig  `yaml:"signal_bus"`
+	Server     ServerConfig    `yaml:"server"`
+	SignalBus  SignalBusConfig `yaml:"signal_bus"`
 	Evaluator  EvaluatorConfig `yaml:"evaluator"`
 	Gate       GateConfig      `yaml:"gate"`
 	Audit      AuditConfig     `yaml:"audit"`
@@ -23,10 +24,23 @@ type Config struct {
 	PolicyPath string          `yaml:"policy_path"` // path to the .dg bundle
 }
 
+// ServerConfig sets the listen addresses of the engine's HTTP servers.
+type ServerConfig struct {
+	ControlAddr string `yaml:"control_addr"` // control API + web console (inject, override, status)
+	SidecarAddr string `yaml:"sidecar_addr"` // feature-flag sidecar queried by applications
+	GateAddr    string `yaml:"gate_addr"`    // human-gate callbacks (Slack buttons, curl)
+}
+
 // SignalBusConfig controls polling behaviour.
 type SignalBusConfig struct {
 	TickInterval       time.Duration `yaml:"tick_interval"`
 	StaleSignalTimeout time.Duration `yaml:"stale_signal_timeout"`
+	// Mode selects where signal values come from:
+	//   auto   — each signal uses its declared source (prometheus needs
+	//            metrics.prometheus_url, proc needs Linux); anything that
+	//            can't be collected falls back to injected values.
+	//   inject — every signal is driven by POST /inject (demos, tests).
+	Mode string `yaml:"mode"`
 }
 
 // EvaluatorConfig controls hysteresis windows.
@@ -69,9 +83,15 @@ type K8sConfig struct {
 // Values from a file override these.
 func Defaults() Config {
 	return Config{
+		Server: ServerConfig{
+			ControlAddr: ":9191",
+			SidecarAddr: ":8081",
+			GateAddr:    ":9292",
+		},
 		SignalBus: SignalBusConfig{
 			TickInterval:       2 * time.Second,
 			StaleSignalTimeout: 30 * time.Second,
+			Mode:               "auto",
 		},
 		Evaluator: EvaluatorConfig{
 			UpHysteresis:   30 * time.Second,
@@ -93,7 +113,7 @@ func Defaults() Config {
 // envVarRe matches ${VAR_NAME} patterns in YAML values.
 var envVarRe = regexp.MustCompile(`\$\{([^}]+)\}`)
 
-// LoadFromFile reads dg-engine.yaml, substitutes ${ENV_VAR} placeholders,
+// LoadFromFile reads dg-engine.yaml, substitutes ${ENV_VAR} placeholders (unset → empty),
 // and merges the result on top of Defaults().
 func LoadFromFile(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
@@ -107,12 +127,11 @@ func LoadFromFile(path string) (*Config, error) {
 // and merging on top of Defaults().
 func LoadFromBytes(raw []byte) (*Config, error) {
 	// Substitute ${ENV_VAR} placeholders.
+	// Unset variables expand to "" so optional integrations (Slack, PagerDuty,
+	// auth token) are disabled rather than configured with a literal "${VAR}".
 	expanded := envVarRe.ReplaceAllFunc(raw, func(match []byte) []byte {
 		varName := string(match[2 : len(match)-1]) // strip ${ and }
-		if val := os.Getenv(varName); val != "" {
-			return []byte(val)
-		}
-		return match // leave as-is if not set
+		return []byte(os.Getenv(varName))
 	})
 
 	cfg := Defaults()

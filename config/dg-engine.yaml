@@ -1,6 +1,12 @@
+server:
+  control_addr: ":9191"   # control API + web console — keep this port internal
+  sidecar_addr: ":8081"
+  gate_addr: ":9292"
+
 signal_bus:
   tick_interval: 2s
   stale_signal_timeout: 30s
+  mode: auto              # use each signal's declared source; anything not collectable falls back to injection
 
 evaluator:
   up_hysteresis: 30s
@@ -17,6 +23,7 @@ audit:
 
 metrics:
   prometheus_port: 9090
+  # prometheus_url: http://prometheus:9090   # required for source: prometheus signals
 
 k8s:
   namespace: default

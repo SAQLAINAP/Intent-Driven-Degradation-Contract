@@ -24,6 +24,14 @@ func NewEngine(
 	cadences map[string]time.Duration,
 	cfg EvaluatorConfig,
 ) *Engine {
+	if cadences == nil {
+		cadences = make(map[string]time.Duration, len(bundle.SignalSources))
+		for _, s := range bundle.SignalSources {
+			if s.PollCadence > 0 {
+				cadences[s.ID] = s.PollCadence
+			}
+		}
+	}
 	return &Engine{
 		bus:        NewSignalBus(fetchers, cadences),
 		evaluator:  NewTierEvaluator(bundle, cfg),
@@ -61,15 +69,14 @@ func (e *Engine) Start(ctx context.Context) {
 			prevTier := e.evaluator.CurrentTier()
 			newTier, changed := e.evaluator.Evaluate(snap)
 
-			// Update signal value metrics on every tick.
+			// Update signal value metrics on every tick. Tier metrics are recorded by
+			// the enforcement layer, which knows the tier actually applied (a human
+			// gate may be holding a transition the evaluator has already proposed).
 			for signalID, val := range snap.Values {
 				metrics.SignalValue.WithLabelValues(e.bundle.Service, signalID).Set(val)
 			}
-			// Keep current tier gauge in sync.
-			metrics.CurrentTier.WithLabelValues(e.bundle.Service, newTier).Set(metrics.TierIndex(newTier))
 
 			if changed {
-				metrics.TierTransitionsTotal.WithLabelValues(e.bundle.Service, prevTier, newTier).Inc()
 				e.dispatcher.Dispatch(TierTransition{
 					From:    prevTier,
 					To:      newTier,
@@ -91,7 +98,22 @@ func (e *Engine) Bus() *SignalBus {
 }
 
 // LockTier forces the engine to hold tierName for duration, ignoring signal conditions.
-// Used by the gate override and sidecar /override endpoint.
-func (e *Engine) LockTier(tierName string, duration time.Duration) {
-	e.evaluator.LockTier(tierName, duration)
+// Used by the gate override and the control API /override endpoint.
+func (e *Engine) LockTier(tierName string, duration time.Duration) error {
+	return e.evaluator.LockTier(tierName, duration)
+}
+
+// Unlock releases any active tier lock.
+func (e *Engine) Unlock() {
+	e.evaluator.Unlock()
+}
+
+// LockState reports the active tier lock, if any.
+func (e *Engine) LockState() (tier string, until time.Time, locked bool) {
+	return e.evaluator.LockState()
+}
+
+// Bundle returns the compiled policy the engine is enforcing.
+func (e *Engine) Bundle() *compiler.CompiledBundle {
+	return e.bundle
 }

@@ -1,7 +1,8 @@
 version: "3.9"
 
 # IDDC observability stack
-# Run: docker compose up -d
+# Run from the repo root: make observability-up
+#   (or: docker compose -f deploy/observability/docker-compose.yaml up -d)
 # Then open: http://localhost:3000  (Grafana, admin/admin)
 # Prometheus: http://localhost:9091
 #
@@ -16,7 +17,7 @@ services:
     ports:
       - "9091:9090"
     volumes:
-      - ./docker/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -33,8 +34,8 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/iddc.json
     volumes:
-      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       - prometheus

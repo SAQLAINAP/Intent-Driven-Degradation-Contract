@@ -99,10 +99,12 @@ func compileSignalSources(signals []policy.Signal) []SignalSource {
 			src = "proc"
 		}
 		out[i] = SignalSource{
-			ID:     s.ID,
-			Source: src,
-			URL:    s.URL,
-			Field:  s.Field,
+			ID:          s.ID,
+			Source:      src,
+			URL:         s.URL,
+			Field:       s.Field,
+			Query:       s.Query,
+			PollCadence: s.PollCadence,
 		}
 	}
 	return out

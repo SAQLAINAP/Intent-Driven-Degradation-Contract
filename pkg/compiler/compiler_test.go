@@ -1,6 +1,8 @@
 package compiler_test
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"iddc/pkg/compiler"
@@ -229,5 +231,132 @@ blast_radius: {}
 	}
 	if b2.SourceChecksum != result.Bundle.SourceChecksum {
 		t.Error("checksum mismatch after round-trip")
+	}
+}
+
+func compileOK(t *testing.T, src string) *compiler.Result {
+	t.Helper()
+	result, err := compileYAML(t, src)
+	if err != nil {
+		t.Fatalf("expected clean compile, got %v — %v", err, result.Diagnostics)
+	}
+	return result
+}
+
+// Regression: ranges written as { gte: a, lt: b } used to lose their lower
+// bound, so a gap between two range tiers went undetected.
+func TestCompile_TierGapWithRangeComparator(t *testing.T) {
+	src := `
+service: svc
+signals: [ { id: rps } ]
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+  - name: warm
+    when: { rps: { gte: 1200, lt: 2000 } }
+  - name: critical
+    when: { rps: { gte: 2000 } }
+`
+	result, _ := compileYAML(t, src)
+	if !hasError(result.Diagnostics, "tier gap") {
+		t.Fatalf("expected tier gap for [800, 1200), got %v", result.Diagnostics)
+	}
+	if msg := result.Diagnostics[0].Message; !strings.Contains(msg, "[800, 1200)") {
+		t.Errorf("gap message = %q, want it to name [800, 1200)", msg)
+	}
+}
+
+func TestCompile_TierGapAboveTopTier(t *testing.T) {
+	src := `
+service: svc
+signals: [ { id: rps } ]
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+  - name: warm
+    when: { rps: { gte: 800, lt: 1500 } }
+`
+	result, _ := compileYAML(t, src)
+	if !hasError(result.Diagnostics, "tier gap") {
+		t.Errorf("expected tier gap for rps ≥ 1500, got %v", result.Diagnostics)
+	}
+}
+
+func TestCompile_AdjacentInclusiveBoundsHaveNoGap(t *testing.T) {
+	compileOK(t, `
+service: svc
+signals: [ { id: mem } ]
+tiers:
+  - name: nominal
+    when: { mem: { lte: 0.8 } }
+  - name: warm
+    when: { mem: { gt: 0.8, lt: 0.95 } }
+  - name: survival
+    when: { mem: { gte: 0.95 } }
+`)
+}
+
+func TestCompile_PointGapBetweenLtAndGt(t *testing.T) {
+	result, _ := compileYAML(t, `
+service: svc
+signals: [ { id: rps } ]
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+  - name: warm
+    when: { rps: { gt: 800 } }
+`)
+	if !hasError(result.Diagnostics, "tier gap") {
+		t.Errorf("expected a gap at rps = 800 exactly, got %v", result.Diagnostics)
+	}
+}
+
+func TestCompile_ShapeErrors(t *testing.T) {
+	cases := map[string]string{
+		"duplicate tier": `
+service: svc
+signals: [ { id: rps } ]
+tiers:
+  - { name: a, when: { rps: { lt: 1 } } }
+  - { name: a, when: { rps: { gte: 1 } } }
+`,
+		"unknown mode": `
+service: svc
+signals: [ { id: rps } ]
+tiers:
+  - { name: a, when: { rps: { gte: 0 } }, behavior: { mode: readonly } }
+`,
+		"bad on_timeout": `
+service: svc
+signals: [ { id: rps } ]
+tiers:
+  - { name: a, when: { rps: { gte: 0 } }, human_gate: { wait: 5s, on_timeout: explode } }
+`,
+		"empty range": `
+service: svc
+signals: [ { id: rps } ]
+tiers:
+  - { name: a, when: { any_of: [ { rps: { gte: 2000, lt: 1500 } } ] } }
+`,
+		"no tiers": `
+service: svc
+signals: [ { id: rps } ]
+`,
+	}
+	for name, src := range cases {
+		if _, err := compileYAML(t, src); err == nil {
+			t.Errorf("%s: expected a compile error", name)
+		}
+	}
+}
+
+func TestCompile_ExampleLadderIsClean(t *testing.T) {
+	data, err := os.ReadFile("../../config/example-degradation.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := compileOK(t, string(data))
+	if n := len(result.Bundle.Tiers); n != 5 {
+		t.Errorf("example tiers = %d, want 5", n)
 	}
 }

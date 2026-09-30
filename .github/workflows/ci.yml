@@ -30,8 +30,11 @@ jobs:
       - name: build dg-engine binary
         run: go build ./cmd/dg-engine
 
-  integration:
-    name: Integration Tests
+      - name: build demo-app binary
+        run: go build ./cmd/demo-app
+
+  smoke:
+    name: End-to-end smoke test
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -40,8 +43,17 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
-      - name: integration tests
-        run: go test -tags=integration -timeout=120s ./pkg/...
+      - name: smoke test (CLI demo set + live engine, gate, queue, demo app)
+        run: bash scripts/smoke.sh
+
+  docker:
+    name: Docker image builds
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        run: docker build -f deploy/docker/Dockerfile -t iddc-demo:ci .
 
   validate-example:
     name: Validate Example Policy
@@ -53,7 +65,5 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
-      - name: build dg
-        run: go build -o dg ./cmd/dg
       - name: validate example policy
-        run: ./dg validate config/example-degradation.yaml
+        run: make validate-example

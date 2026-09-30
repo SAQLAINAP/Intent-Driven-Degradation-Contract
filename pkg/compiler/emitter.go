@@ -38,6 +38,9 @@ type SignalSource struct {
 	Source string
 	URL    string // HTTP source: endpoint URL
 	Field  string // HTTP source: JSON field to extract
+	Query  string // Prometheus source: PromQL expression (optional)
+
+	PollCadence time.Duration // 0 = engine default
 }
 
 func init() {

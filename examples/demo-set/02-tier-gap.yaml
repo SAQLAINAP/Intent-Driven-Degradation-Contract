@@ -1,0 +1,15 @@
+# Tier gap: nothing covers rps in [800, 1200). The compiler must reject it.
+service: api-gateway
+version: "1.0.0"
+signals:
+  - id: rps
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+    behavior: { mode: full_service }
+  - name: warm
+    when: { rps: { gte: 1200, lt: 2000 } }
+    behavior: { mode: full_service, disable: [recommendations] }
+  - name: critical
+    when: { rps: { gte: 2000 } }
+    behavior: { mode: read_only }

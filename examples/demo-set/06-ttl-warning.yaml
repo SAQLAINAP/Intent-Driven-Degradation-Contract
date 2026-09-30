@@ -1,0 +1,16 @@
+# Queue TTL (30s) is shorter than the recovery SLA (120s). Compiles with a ttl-sla warning.
+service: orders
+version: "1.0.0"
+signals:
+  - id: rps
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+    behavior: { mode: full_service }
+  - name: critical
+    when: { rps: { gte: 800 } }
+    behavior:
+      mode: read_only
+      queue_writes: { max_depth: 100, ttl: 30s }
+blast_radius:
+  recovery_sla_seconds: 120

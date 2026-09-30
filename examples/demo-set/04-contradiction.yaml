@@ -1,0 +1,15 @@
+# payment-service is both a cascade target and the isolation boundary. Rejected.
+service: api-gateway
+version: "1.0.0"
+signals:
+  - id: rps
+tiers:
+  - name: nominal
+    when: { rps: { lt: 800 } }
+    behavior: { mode: full_service }
+  - name: critical
+    when: { rps: { gte: 800 } }
+    behavior: { mode: read_only }
+blast_radius:
+  cascade_to: [payment-service]
+  isolation_boundary: payment-service

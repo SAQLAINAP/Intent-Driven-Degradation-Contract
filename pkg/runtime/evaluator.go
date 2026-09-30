@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -53,14 +54,38 @@ func NewTierEvaluator(bundle *compiler.CompiledBundle, cfg EvaluatorConfig) *Tie
 
 // LockTier forces the evaluator to hold tierName for duration, ignoring signals.
 // This implements the override hold (Phase 3.3).
-func (e *TierEvaluator) LockTier(tierName string, duration time.Duration) {
+// Returns an error if tierName is not declared in the policy.
+func (e *TierEvaluator) LockTier(tierName string, duration time.Duration) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	idx := e.tierIndex(tierName)
+	if idx < 0 {
+		return fmt.Errorf("unknown tier %q", tierName)
+	}
 	e.lockedTier = tierName
 	e.lockUntil = time.Now().Add(duration)
 	e.currentTier = tierName
-	e.currentTierIdx = e.tierIndex(tierName)
+	e.currentTierIdx = idx
 	e.candidateTier = ""
+	return nil
+}
+
+// Unlock releases a tier lock early so signal evaluation resumes on the next tick.
+func (e *TierEvaluator) Unlock() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.lockedTier = ""
+	e.lockUntil = time.Time{}
+}
+
+// LockState reports the active tier lock, if any.
+func (e *TierEvaluator) LockState() (tier string, until time.Time, locked bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.lockedTier == "" || !time.Now().Before(e.lockUntil) {
+		return "", time.Time{}, false
+	}
+	return e.lockedTier, e.lockUntil, true
 }
 
 // Evaluate takes a snapshot of current signal values and returns:
@@ -81,7 +106,7 @@ func (e *TierEvaluator) Evaluate(snap SignalSnapshot) (newTier string, changed b
 		e.lockedTier = ""
 	}
 
-	candidate := e.matchTierLocked(snap)
+	candidate := MatchTier(e.bundle, snap.Values)
 
 	if candidate == e.currentTier {
 		// Reset any pending candidate.
@@ -117,11 +142,9 @@ func (e *TierEvaluator) Evaluate(snap SignalSnapshot) (newTier string, changed b
 
 	if now.Sub(e.candidateStart) >= hysteresis {
 		// Transition confirmed.
-		prev := e.currentTier
 		e.currentTier = candidate
 		e.currentTierIdx = candidateIdx
 		e.candidateTier = ""
-		_ = prev
 		return e.currentTier, true
 	}
 
@@ -140,29 +163,33 @@ func (e *TierEvaluator) Bundle() *compiler.CompiledBundle {
 	return e.bundle
 }
 
-// matchTierLocked walks the tier list in order and returns the name of the first
-// tier whose condition is satisfied by the snapshot.
-// Falls back to the first (lowest) tier if nothing matches.
-// Must be called with e.mu held.
-func (e *TierEvaluator) matchTierLocked(snap SignalSnapshot) string {
-	for _, t := range e.bundle.Tiers {
-		if evalCondition(t.Condition, snap.Values) {
-			return t.Name
+// MatchTier returns the tier whose condition is satisfied by vals, ignoring hysteresis.
+//
+// Tiers are declared from least to most degraded, so the ladder is walked from
+// the most degraded tier downwards and the first match wins. This guarantees a
+// severe condition (e.g. mem_pressure >= 0.95) is never shadowed by a milder
+// tier that also happens to match (e.g. rps < 800).
+// Falls back to the first (least degraded) tier if nothing matches.
+func MatchTier(bundle *compiler.CompiledBundle, vals map[string]float64) string {
+	for i := len(bundle.Tiers) - 1; i >= 0; i-- {
+		if evalCondition(bundle.Tiers[i].Condition, vals) {
+			return bundle.Tiers[i].Name
 		}
 	}
-	if len(e.bundle.Tiers) > 0 {
-		return e.bundle.Tiers[0].Name
+	if len(bundle.Tiers) > 0 {
+		return bundle.Tiers[0].Name
 	}
 	return ""
 }
 
+// tierIndex returns the ladder position of name, or -1 if it is not declared.
 func (e *TierEvaluator) tierIndex(name string) int {
 	for i, t := range e.bundle.Tiers {
 		if t.Name == name {
 			return i
 		}
 	}
-	return 0
+	return -1
 }
 
 // evalCondition recursively evaluates the Condition tree against a signal snapshot.

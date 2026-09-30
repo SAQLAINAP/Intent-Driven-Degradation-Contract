@@ -1,0 +1,43 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/youorg/dg-engine
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  name: api-gateway
+  port: 8080
+
+sidecar:
+  port: 8081
+
+metrics:
+  port: 9090
+
+config:
+  evaluator:
+    upHysteresis: 30s
+    downHysteresis: 90s
+  signalBus:
+    tickInterval: 2s
+    staleSignalTimeout: 30s
+  k8s:
+    namespace: default
+    leaderElection: false
+  audit:
+    output: stdout
+
+policyBundle: ""  # path to policy.dg; set at install time
+
+secrets:
+  slackWebhookUrl: ""
+  gateAuthToken: ""
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 32Mi

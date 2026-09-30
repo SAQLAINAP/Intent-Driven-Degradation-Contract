@@ -9,19 +9,70 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"iddc/pkg/compiler"
 )
 
 // TierState is the current state served to application code.
 type TierState struct {
 	Current string             `json:"current"`
+	Mode    string             `json:"mode,omitempty"`
 	Since   time.Time          `json:"since"`
 	Signals map[string]float64 `json:"signals"`
 }
 
 // FeatureFlags maps feature names to enabled/disabled for the current tier.
+// Mode is the tier's behavior mode (full_service, read_only, static_fallback)
+// so applications can react to the mode rather than hard-coding tier names.
 type FeatureFlags struct {
 	Tier     string          `json:"tier"`
+	Mode     string          `json:"mode,omitempty"`
 	Features map[string]bool `json:"features"`
+}
+
+// TierBehavior is the per-tier feature state the sidecar serves.
+type TierBehavior struct {
+	Mode     string
+	Features map[string]bool
+}
+
+// Policy is the feature table derived from a compiled bundle.
+type Policy struct {
+	InitialTier string
+	Tiers       map[string]TierBehavior
+}
+
+// PolicyFromBundle derives the feature table from a compiled policy:
+//
+//   - the feature universe is every name listed in any tier's disable: list;
+//   - a full_service tier enables every feature except the ones it disables;
+//   - read_only and static_fallback tiers disable every feature.
+func PolicyFromBundle(b *compiler.CompiledBundle) Policy {
+	universe := map[string]bool{}
+	for _, t := range b.Tiers {
+		for _, f := range t.Behavior.Disable {
+			universe[f] = true
+		}
+	}
+	p := Policy{Tiers: make(map[string]TierBehavior, len(b.Tiers))}
+	if len(b.Tiers) > 0 {
+		p.InitialTier = b.Tiers[0].Name
+	}
+	for _, t := range b.Tiers {
+		mode := t.Behavior.Mode
+		if mode == "" {
+			mode = "full_service"
+		}
+		features := make(map[string]bool, len(universe))
+		for f := range universe {
+			features[f] = mode == "full_service"
+		}
+		for _, f := range t.Behavior.Disable {
+			features[f] = false
+		}
+		p.Tiers[t.Name] = TierBehavior{Mode: mode, Features: features}
+	}
+	return p
 }
 
 // Server is the sidecar HTTP server.
@@ -29,6 +80,7 @@ type Server struct {
 	mu        sync.RWMutex
 	state     TierState
 	features  map[string]bool
+	policy    *Policy
 	authToken string
 	addr      string
 	mux       *http.ServeMux
@@ -55,6 +107,35 @@ func NewServer(addr, authToken string) *Server {
 	return s
 }
 
+// UsePolicy switches the server from the built-in demo feature table to one
+// derived from a compiled policy, and resets the state to the policy's first tier.
+func (s *Server) UsePolicy(p Policy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.policy = &p
+	s.state = TierState{Current: p.InitialTier, Mode: p.Tiers[p.InitialTier].Mode, Since: time.Now()}
+	s.features = s.featuresForTierLocked(p.InitialTier)
+}
+
+// KnownTier reports whether tier exists in the active policy (always true
+// when no policy has been loaded).
+func (s *Server) KnownTier(tier string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.policy == nil {
+		return true
+	}
+	_, ok := s.policy.Tiers[tier]
+	return ok
+}
+
+// Features returns a copy of the current feature flags.
+func (s *Server) Features() FeatureFlags {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.flagsLocked()
+}
+
 // ServeHTTP implements http.Handler, enabling use with httptest.NewRecorder in tests.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
@@ -78,16 +159,46 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) SetTier(tier string, signals map[string]float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state = TierState{Current: tier, Since: time.Now(), Signals: signals}
-	s.features = featuresForTier(tier)
+	s.state = TierState{Current: tier, Mode: s.modeLocked(tier), Since: time.Now(), Signals: signals}
+	s.features = s.featuresForTierLocked(tier)
 }
 
 // FallbackActive reports whether the current tier requires the static fallback
-// page (i.e. survival tier — all features disabled, return 503).
+// page (static_fallback mode — all features disabled, return 503).
 func (s *Server) FallbackActive() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.policy != nil {
+		return s.state.Mode == "static_fallback"
+	}
 	return s.state.Current == "survival"
+}
+
+func (s *Server) modeLocked(tier string) string {
+	if s.policy != nil {
+		return s.policy.Tiers[tier].Mode
+	}
+	return ""
+}
+
+func (s *Server) featuresForTierLocked(tier string) map[string]bool {
+	if s.policy == nil {
+		return featuresForTier(tier)
+	}
+	src := s.policy.Tiers[tier].Features
+	out := make(map[string]bool, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func (s *Server) flagsLocked() FeatureFlags {
+	features := make(map[string]bool, len(s.features))
+	for k, v := range s.features {
+		features[k] = v
+	}
+	return FeatureFlags{Tier: s.state.Current, Mode: s.state.Mode, Features: features}
 }
 
 // Tier returns the current tier name.
@@ -100,7 +211,7 @@ func (s *Server) Tier() string {
 func (s *Server) handleFlags(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	writeJSON(w, FeatureFlags{Tier: s.state.Current, Features: s.features})
+	writeJSON(w, s.flagsLocked())
 }
 
 func (s *Server) handleTier(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +244,10 @@ func (s *Server) handleOverride(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if req.Tier == "" || !s.KnownTier(req.Tier) {
+		http.Error(w, fmt.Sprintf("unknown tier %q", req.Tier), http.StatusBadRequest)
+		return
+	}
 	s.SetTier(req.Tier, nil)
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -150,8 +265,8 @@ func allFeaturesEnabled() map[string]bool {
 	}
 }
 
-// featuresForTier returns the feature flag map for a given tier name.
-// This implements the behavior table from the spec.
+// featuresForTier is the built-in demo table used when no policy is loaded
+// (see UsePolicy). It mirrors config/example-degradation.yaml.
 func featuresForTier(tier string) map[string]bool {
 	switch tier {
 	case "nominal":

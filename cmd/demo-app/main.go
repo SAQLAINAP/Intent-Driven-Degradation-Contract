@@ -1,13 +1,13 @@
 // Command demo-app is a tiny e-commerce simulation that honours IDDC tier signals.
 //
 // It queries the sidecar server every request to get the current feature flags
-// and adjusts its behaviour accordingly:
+// and adjusts its behaviour to the tier's mode and flags — it never hard-codes
+// tier names, so it works with any policy:
 //
-//	nominal   — all features enabled (recommendations, search, checkout)
-//	warm      — recommendations disabled (read-heavy features off)
-//	hot       — uploads disabled as well; static product list served
-//	critical  — search returns cached results only; checkout queued
-//	survival  — static 503 fallback page for all routes
+//	full_service     — features on unless the tier disables them
+//	read_only        — search serves cached results; checkout is buffered in
+//	                   the engine's write queue (POST <engine>/write)
+//	static_fallback  — static 503 fallback page for all routes
 //
 // Usage:
 //
@@ -23,11 +23,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,11 +42,25 @@ import (
 // sidecarFlags is fetched from the sidecar /flags endpoint.
 type sidecarFlags struct {
 	Tier     string          `json:"tier"`
+	Mode     string          `json:"mode"`
 	Features map[string]bool `json:"features"`
 }
 
+// fallback reports whether the static 503 page should be served.
+// Older sidecars don't send mode, so fall back to the demo tier name.
+func (f *sidecarFlags) fallback() bool {
+	return f.Mode == "static_fallback" || (f.Mode == "" && f.Tier == "survival")
+}
+
+// readOnly reports whether writes must be buffered instead of applied.
+func (f *sidecarFlags) readOnly() bool {
+	return f.Mode == "read_only" || (f.Mode == "" && f.Tier == "critical")
+}
+
+var httpClient = &http.Client{Timeout: 2 * time.Second}
+
 func fetchFlags(sidecarURL string) (*sidecarFlags, error) {
-	resp, err := http.Get(sidecarURL + "/flags")
+	resp, err := httpClient.Get(sidecarURL + "/flags")
 	if err != nil {
 		// If sidecar is unreachable, degrade to nominal (fail-open).
 		return &sidecarFlags{
@@ -74,20 +91,20 @@ func run(addr, sidecarURL, engineURL string) error {
 			return
 		}
 
-		if flags.Tier == "survival" {
+		if flags.fallback() {
 			serveFallback(w, r)
 			return
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, homePage(flags))
+		fmt.Fprint(w, homePage(flags, engineURL))
 	})
 
 	// ── /recommendations ──────────────────────────────────────────────────────
 	mux.HandleFunc("/recommendations", func(w http.ResponseWriter, r *http.Request) {
 		flags, _ := fetchFlags(sidecarURL)
 
-		if flags.Tier == "survival" {
+		if flags.fallback() {
 			serveFallback(w, r)
 			return
 		}
@@ -116,16 +133,16 @@ func run(addr, sidecarURL, engineURL string) error {
 		flags, _ := fetchFlags(sidecarURL)
 		q := r.URL.Query().Get("q")
 
-		if flags.Tier == "survival" {
+		if flags.fallback() {
 			serveFallback(w, r)
 			return
 		}
 
-		cached := flags.Tier == "critical" || flags.Tier == "survival"
+		cached := flags.readOnly()
 		writeJSON(w, map[string]interface{}{
-			"tier":   flags.Tier,
-			"query":  q,
-			"cached": cached,
+			"tier":    flags.Tier,
+			"query":   q,
+			"cached":  cached,
 			"results": filterResults(q, cached),
 		})
 	})
@@ -138,19 +155,44 @@ func run(addr, sidecarURL, engineURL string) error {
 		}
 		flags, _ := fetchFlags(sidecarURL)
 
-		if flags.Tier == "survival" {
+		if flags.fallback() {
 			serveFallback(w, r)
 			return
 		}
 
-		if flags.Tier == "critical" {
-			// Simulate write queue — in a real app, push to POST :9191/write
+		ref := fmt.Sprintf("ORD-%d", time.Now().UnixMilli())
+		if flags.readOnly() {
+			// Read-only tier: buffer the order in the engine's write queue; it is
+			// drained (replayed) when the service recovers.
+			body, _ := json.Marshal(map[string]string{"id": ref, "payload": "checkout"})
+			resp, err := httpClient.Post(engineURL+"/write", "application/json", bytes.NewReader(body))
+			if err != nil || resp.StatusCode != http.StatusOK {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				w.Header().Set("Retry-After", "30")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"tier":    flags.Tier,
+					"status":  "rejected",
+					"message": "Checkout is temporarily unavailable. Please retry shortly.",
+				})
+				return
+			}
+			var q struct {
+				Depth int `json:"depth"`
+			}
+			json.NewDecoder(resp.Body).Decode(&q)
+			resp.Body.Close()
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
-			writeJSON(w, map[string]interface{}{
-				"tier":    flags.Tier,
-				"status":  "queued",
-				"message": "Your order has been received and will be processed shortly.",
-				"ref":     fmt.Sprintf("ORD-%d", time.Now().UnixMilli()),
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"tier":        flags.Tier,
+				"status":      "queued",
+				"message":     "Your order has been received and will be processed shortly.",
+				"ref":         ref,
+				"queue_depth": q.Depth,
 			})
 			return
 		}
@@ -159,7 +201,7 @@ func run(addr, sidecarURL, engineURL string) error {
 			"tier":    flags.Tier,
 			"status":  "confirmed",
 			"message": "Order placed successfully!",
-			"ref":     fmt.Sprintf("ORD-%d", time.Now().UnixMilli()),
+			"ref":     ref,
 		})
 	})
 
@@ -179,7 +221,7 @@ func run(addr, sidecarURL, engineURL string) error {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
-		resp, err := http.Post(engineURL+"/inject", "application/json", r.Body)
+		resp, err := httpClient.Post(engineURL+"/inject", "application/json", r.Body)
 		if err != nil {
 			http.Error(w, "engine unreachable: "+err.Error(), http.StatusBadGateway)
 			return
@@ -235,7 +277,7 @@ func filterResults(q string, cached bool) []map[string]string {
 	return out
 }
 
-func homePage(flags *sidecarFlags) string {
+func homePage(flags *sidecarFlags, engineURL string) string {
 	tier := flags.Tier
 	tierColor := map[string]string{
 		"nominal":  "#27ae60",
@@ -256,7 +298,20 @@ func homePage(flags *sidecarFlags) string {
 			icon = "✗"
 			c = "#e74c3c"
 		}
-		return fmt.Sprintf(`<tr><td>%s</td><td style="color:%s;font-weight:bold">%s %v</td></tr>`, name, c, icon, enabled)
+		return fmt.Sprintf(`<tr><td>%s</td><td style="color:%s;font-weight:bold">%s %v</td></tr>`, html.EscapeString(name), c, icon, enabled)
+	}
+	names := make([]string, 0, len(flags.Features))
+	for name := range flags.Features {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var rows strings.Builder
+	for _, name := range names {
+		rows.WriteString(featureRow(name, flags.Features[name]))
+	}
+	mode := flags.Mode
+	if mode == "" {
+		mode = "unknown"
 	}
 
 	return fmt.Sprintf(`<!DOCTYPE html>
@@ -293,11 +348,9 @@ func homePage(flags *sidecarFlags) string {
 <body>
   <h1>IDDC Demo</h1>
   <p class="sub">Intent-Driven Degradation Contracts — live tier simulation</p>
-  <p>Active tier: <span class="tier">%s</span></p>
+  <p>Active tier: <span class="tier">%s</span> <span style="color:#888;font-size:.85rem">mode: %s</span></p>
   <table>
     <tr><th>Feature</th><th>Status</th></tr>
-    %s
-    %s
     %s
   </table>
 
@@ -309,7 +362,7 @@ func homePage(flags *sidecarFlags) string {
       <button class="btn btn-hot"      onclick="inject({rps:1600,pod_ceiling:0.90})">Hot<br><small>rps=1600</small></button>
       <button class="btn btn-critical" onclick="inject({rps:2500})">Critical<br><small>rps=2500</small></button>
       <button class="btn btn-survival" onclick="inject({mem_pressure:0.96})">Survival<br><small>mem=96%%</small></button>
-      <button class="btn btn-recover"  onclick="inject({rps:50,pod_ceiling:0.2,mem_pressure:0.1})">Recover<br><small>all low</small></button>
+      <button class="btn btn-recover"  onclick="inject({rps:50,pod_ceiling:0.2,mem_pressure:0.1,db_latency_p99:0})">Recover<br><small>all low</small></button>
     </div>
     <div id="status"></div>
   </div>
@@ -318,8 +371,9 @@ func homePage(flags *sidecarFlags) string {
     <a href="/search?q=keyboard">Search</a>
     <a href="/recommendations">Recommendations</a>
     <a href="/health">Health</a>
+    <a href="%s/">IDDC console →</a>
   </div>
-  <p style="font-size:.75rem;color:#aaa;margin-top:1rem">Auto-refreshes every 3s &nbsp;·&nbsp; tier transitions take ~3–5s (dev hysteresis)</p>
+  <p style="font-size:.75rem;color:#aaa;margin-top:1rem">Auto-refreshes every 3s &nbsp;·&nbsp; tier transitions take ~3–5s (dev hysteresis) &nbsp;·&nbsp; critical and survival are gated: approve them in the console</p>
 
   <script>
   async function inject(signals) {
@@ -340,10 +394,9 @@ func homePage(flags *sidecarFlags) string {
   </script>
 </body>
 </html>`,
-		color, tier,
-		featureRow("recommendations", flags.Features["recommendations"]),
-		featureRow("analytics", flags.Features["analytics"]),
-		featureRow("uploads", flags.Features["uploads"]),
+		color, html.EscapeString(tier), html.EscapeString(mode),
+		rows.String(),
+		html.EscapeString(engineURL),
 	)
 }
 

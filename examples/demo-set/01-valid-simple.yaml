@@ -1,0 +1,14 @@
+# Valid single-signal ladder. Compiles cleanly with no diagnostics.
+service: checkout-api
+version: "1.0.0"
+signals:
+  - id: rps
+tiers:
+  - name: nominal
+    when: { rps: { lt: 500 } }
+    behavior: { mode: full_service }
+  - name: warm
+    when: { rps: { gte: 500 } }
+    behavior:
+      mode: full_service
+      disable: [recommendations]

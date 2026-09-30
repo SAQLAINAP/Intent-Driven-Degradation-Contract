@@ -19,26 +19,37 @@ const (
 	EventGateApproved   EventType = "gate_approved"
 	EventGateOverridden EventType = "gate_overridden"
 	EventGateTimedOut   EventType = "gate_timed_out"
+	EventGateEscalated  EventType = "gate_escalated"
+	EventGateSuperseded EventType = "gate_superseded"
+	EventTierOverride   EventType = "tier_override"
+	EventQueueDrained   EventType = "queue_drained"
 )
 
 // Event is a single audit record.
 type Event struct {
-	Type           EventType          `json:"event"`
-	Service        string             `json:"service"`
-	Tier           string             `json:"tier,omitempty"`
-	FromTier       string             `json:"from_tier,omitempty"`
-	ToTier         string             `json:"to_tier,omitempty"`
-	Signals        map[string]float64 `json:"signals,omitempty"`
-	GateOutcome    string             `json:"gate_outcome,omitempty"`
-	Operator       *string            `json:"operator"`
-	OverrideTier   *string            `json:"override_target"`
-	Timestamp      time.Time          `json:"ts"`
+	Type         EventType          `json:"event"`
+	Service      string             `json:"service"`
+	Tier         string             `json:"tier,omitempty"`
+	FromTier     string             `json:"from_tier,omitempty"`
+	ToTier       string             `json:"to_tier,omitempty"`
+	Signals      map[string]float64 `json:"signals,omitempty"`
+	GateOutcome  string             `json:"gate_outcome,omitempty"`
+	Reason       string             `json:"reason,omitempty"`
+	Count        int                `json:"count,omitempty"`
+	Operator     *string            `json:"operator"`
+	OverrideTier *string            `json:"override_target"`
+	Timestamp    time.Time          `json:"ts"`
 }
 
-// Logger writes Events as NDJSON lines to an io.Writer.
+// recentCap is how many events Recent can return.
+const recentCap = 200
+
+// Logger writes Events as NDJSON lines to an io.Writer and keeps the most
+// recent events in memory for the control API / web console.
 type Logger struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu     sync.Mutex
+	w      io.Writer
+	recent []Event
 }
 
 // NewLogger creates a Logger writing to w.
@@ -71,4 +82,22 @@ func (l *Logger) Log(e Event) {
 	defer l.mu.Unlock()
 	l.w.Write(data)
 	l.w.Write([]byte("\n"))
+	l.recent = append(l.recent, e)
+	if len(l.recent) > recentCap {
+		l.recent = l.recent[len(l.recent)-recentCap:]
+	}
+}
+
+// Recent returns up to n of the most recent events, newest first.
+func (l *Logger) Recent(n int) []Event {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if n <= 0 || n > len(l.recent) {
+		n = len(l.recent)
+	}
+	out := make([]Event, 0, n)
+	for i := len(l.recent) - 1; i >= len(l.recent)-n; i-- {
+		out = append(out, l.recent[i])
+	}
+	return out
 }

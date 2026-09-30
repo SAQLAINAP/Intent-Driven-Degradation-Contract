@@ -13,6 +13,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,6 +26,9 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "dg",
 	Short: "IDDC — Intent-Driven Degradation Contracts compiler and tool",
+	// Arguments are validated before this hook runs, so usage is still printed
+	// for bad invocations but not for runtime errors such as a failed compile.
+	PersistentPreRun: func(cmd *cobra.Command, args []string) { cmd.SilenceUsage = true },
 }
 
 func main() {
@@ -112,7 +116,7 @@ func runCompile(policyPath, outPath string, dryRun bool) error {
 	}
 
 	if outPath == "" {
-		outPath = strings.TrimSuffix(policyPath, ".yaml") + ".dg"
+		outPath = strings.TrimSuffix(strings.TrimSuffix(policyPath, ".yaml"), ".yml") + ".dg"
 	}
 	if err := result.Bundle.WriteToFile(outPath); err != nil {
 		return err
@@ -221,48 +225,58 @@ func simulateCmd() *cobra.Command {
 			}
 			result, err := compiler.Compile(p, src)
 			if err != nil {
+				for _, d := range result.Diagnostics {
+					fmt.Fprintln(os.Stderr, " ", d.Error())
+				}
 				return fmt.Errorf("policy invalid: %w", err)
 			}
 
-			// Parse --signal=id:val flags.
-			snap := runtime.SignalSnapshot{
-				Values: make(map[string]float64),
-				Stale:  make(map[string]bool),
+			declared := make(map[string]bool, len(p.Signals))
+			for _, s := range p.Signals {
+				declared[s.ID] = true
 			}
+			vals := make(map[string]float64)
 			for _, s := range signalFlags {
 				parts := strings.SplitN(s, ":", 2)
 				if len(parts) != 2 {
 					return fmt.Errorf("invalid --signal flag: %q (expected id:value)", s)
 				}
-				var v float64
-				if _, err := fmt.Sscanf(parts[1], "%f", &v); err != nil {
-					return fmt.Errorf("invalid signal value %q: %w", parts[1], err)
+				v, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+				if err != nil {
+					return fmt.Errorf("invalid value for signal %q: %q is not a number", parts[0], parts[1])
 				}
-				snap.Values[parts[0]] = v
+				if !declared[parts[0]] {
+					fmt.Fprintf(os.Stderr, "warning: signal %q is not declared in %s and is ignored by every tier\n", parts[0], args[0])
+				}
+				vals[parts[0]] = v
 			}
 
-			eval := runtime.NewTierEvaluator(result.Bundle, runtime.DefaultEvaluatorConfig)
-			// Skip hysteresis for simulation — just get the raw match.
-			// We do this by directly calling matchTier via the exported helper.
-			tier := simulateMatch(eval, snap)
-			fmt.Printf("Signals: %v\n", snap.Values)
+			// Raw match, no hysteresis: what the engine would converge to.
+			tier := runtime.MatchTier(result.Bundle, vals)
+			fmt.Printf("Signals: %v\n", vals)
 			fmt.Printf("Matched tier: %s\n", tier)
+			for _, t := range result.Bundle.Tiers {
+				if t.Name != tier {
+					continue
+				}
+				mode := t.Behavior.Mode
+				if mode == "" {
+					mode = "full_service"
+				}
+				fmt.Printf("  mode: %s\n", mode)
+				if len(t.Behavior.Disable) > 0 {
+					fmt.Printf("  disables: %s\n", strings.Join(t.Behavior.Disable, ", "))
+				}
+				if t.GateSpec != nil {
+					fmt.Printf("  human gate: wait=%s on_timeout=%s (the engine holds the transition until decided)\n",
+						t.GateSpec.Wait, t.GateSpec.OnTimeout)
+				}
+			}
 			return nil
 		},
 	}
 	c.Flags().StringArrayVar(&signalFlags, "signal", nil, "Signal value: id:value (repeatable)")
 	return c
-}
-
-// simulateMatch exposes the raw tier match without hysteresis (for CLI simulation).
-func simulateMatch(e *runtime.TierEvaluator, snap runtime.SignalSnapshot) string {
-	// Force the hysteresis window to zero for instant evaluation.
-	cfg := runtime.DefaultEvaluatorConfig
-	cfg.UpHysteresis = 0
-	cfg.DownHysteresis = 0
-	e2 := runtime.NewTierEvaluator(e.Bundle(), cfg)
-	tier, _ := e2.Evaluate(snap)
-	return tier
 }
 
 // ─── version ─────────────────────────────────────────────────────────────────
