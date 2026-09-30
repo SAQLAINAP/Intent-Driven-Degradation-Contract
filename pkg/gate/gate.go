@@ -2,13 +2,14 @@ package gate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"iddc/pkg/audit"
-	"iddc/pkg/metrics"
-	"iddc/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/audit"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/metrics"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
 )
 
 // Outcome represents the result of a human gate evaluation.
@@ -32,6 +33,13 @@ type GateResponse struct {
 	Message     string // for escalate
 	Token       string
 }
+
+// Errors returned by Respond.
+var (
+	ErrUnauthorized    = errors.New("invalid auth token")
+	ErrNoPendingGate   = errors.New("no gate currently pending")
+	ErrAlreadyAnswered = errors.New("gate already answered")
+)
 
 // Decision is what Fire returns once the gate closes.
 type Decision struct {
@@ -204,19 +212,19 @@ func (g *HumanGate) Fire(ctx context.Context, svc, fromTier, tier string, spec *
 // Returns an error if no gate is currently pending or the token is invalid.
 func (g *HumanGate) Respond(resp GateResponse) error {
 	if g.cfg.AuthToken != "" && resp.Token != g.cfg.AuthToken {
-		return fmt.Errorf("invalid auth token")
+		return ErrUnauthorized
 	}
 	g.mu.Lock()
 	p := g.pending
 	g.mu.Unlock()
 	if p == nil {
-		return fmt.Errorf("no gate currently pending")
+		return ErrNoPendingGate
 	}
 	select {
 	case p.respCh <- resp:
 		return nil
 	default:
-		return fmt.Errorf("gate already answered")
+		return ErrAlreadyAnswered
 	}
 }
 

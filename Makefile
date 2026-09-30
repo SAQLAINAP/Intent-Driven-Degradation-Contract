@@ -5,6 +5,14 @@ ENGINE    := $(BIN_DIR)/dg-engine
 DEMO      := $(BIN_DIR)/demo-app
 POLICY    := $(BIN_DIR)/policy.dg
 
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+PKG     := github.com/SAQLAINAP/Intent-Driven-Degradation-Contract
+LDFLAGS := -s -w -X $(PKG)/internal/version.Version=$(VERSION) \
+           -X $(PKG)/internal/version.Commit=$(COMMIT) -X $(PKG)/internal/version.Date=$(DATE)
+GOBUILD := go build -trimpath -ldflags "$(LDFLAGS)"
+
 EXAMPLE_POLICY := config/example-degradation.yaml
 DEV_CONFIG     := config/dg-engine-dev.yaml
 DEMO_PORT      ?= 8080
@@ -12,7 +20,7 @@ IMAGE          ?= iddc-demo
 
 .DEFAULT_GOAL := help
 .PHONY: help build build-engine build-demo build-all \
-        test test-cover vet lint smoke \
+        test test-cover vet lint fmt smoke release-local \
         compile-example validate-example inspect-example graph-example simulate-critical version \
         run-dev run-demo demo docker-build docker-run observability-up observability-down clean
 
@@ -22,13 +30,13 @@ help: ## List available targets
 # ─── build ────────────────────────────────────────────────────────────────────
 
 build: ## Build the dg CLI → bin/dg
-	go build -o $(DG) ./cmd/dg
+	$(GOBUILD) -o $(DG) ./cmd/dg
 
 build-engine: ## Build the runtime engine → bin/dg-engine
-	go build -o $(ENGINE) ./cmd/dg-engine
+	$(GOBUILD) -o $(ENGINE) ./cmd/dg-engine
 
 build-demo: ## Build the demo shop → bin/demo-app
-	go build -o $(DEMO) ./cmd/demo-app
+	$(GOBUILD) -o $(DEMO) ./cmd/demo-app
 
 build-all: build build-engine build-demo ## Build all three binaries
 
@@ -44,8 +52,11 @@ test-cover: ## Unit tests with a coverage summary
 vet: ## go vet all packages
 	go vet ./...
 
-lint: ## golangci-lint (must be installed)
+lint: ## golangci-lint v2 (install: https://golangci-lint.run/welcome/install/)
 	golangci-lint run ./...
+
+fmt: ## gofmt all Go files in place
+	gofmt -w cmd pkg internal
 
 smoke: ## End-to-end smoke test: CLI demo set + live engine and demo shop
 	bash scripts/smoke.sh
@@ -82,8 +93,11 @@ run-dev: build-engine compile-example ## Engine only, dev config (console http:/
 run-demo: build-demo ## Demo shop only (expects run-dev in another terminal)
 	$(DEMO) --addr :$(DEMO_PORT) --sidecar http://localhost:8081 --engine http://localhost:9191
 
+release-local: ## Cross-compile release archives into dist/ (VERSION=v0.1.0)
+	VERSION=$(VERSION) bash scripts/release.sh
+
 docker-build: ## Build the demo Docker image
-	docker build -f deploy/docker/Dockerfile -t $(IMAGE) .
+	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE) .
 
 docker-run: docker-build ## Run the demo image (shop :8080, console :9191)
 	docker run --rm -p 8080:8080 -p 9191:9191 $(IMAGE)
@@ -95,5 +109,5 @@ observability-down: ## Stop the observability stack
 	docker compose -f deploy/observability/docker-compose.yaml down
 
 clean: ## Remove build output (including binaries left in the root by older layouts)
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) dist
 	rm -f dg dg-engine demo-app policy.dg config/example-degradation.dg coverage.out

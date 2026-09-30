@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"iddc/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
 )
 
 // Severity classifies a compile diagnostic.

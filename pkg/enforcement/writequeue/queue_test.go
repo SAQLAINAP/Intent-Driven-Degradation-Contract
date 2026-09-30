@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"iddc/pkg/enforcement/writequeue"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/enforcement/writequeue"
 )
 
 func TestQueue_EnqueueDrain(t *testing.T) {

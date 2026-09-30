@@ -29,18 +29,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 
-	"iddc/pkg/audit"
-	"iddc/pkg/collector"
-	"iddc/pkg/compiler"
-	appconfig "iddc/pkg/config"
-	"iddc/pkg/enforcement/enforcer"
-	k8sctl "iddc/pkg/enforcement/k8s"
-	"iddc/pkg/enforcement/sidecar"
-	"iddc/pkg/enforcement/writequeue"
-	"iddc/pkg/gate"
-	"iddc/pkg/policy"
-	"iddc/pkg/runtime"
-	"iddc/pkg/sigfetch"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/internal/version"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/audit"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/collector"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/compiler"
+	appconfig "github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/config"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/enforcement/enforcer"
+	k8sctl "github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/enforcement/k8s"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/enforcement/sidecar"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/enforcement/writequeue"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/gate"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/runtime"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/sigfetch"
 )
 
 func main() {
@@ -48,8 +49,9 @@ func main() {
 	var configPath string
 
 	root := &cobra.Command{
-		Use:   "dg-engine",
-		Short: "IDDC runtime engine — enforces degradation contracts continuously",
+		Use:     "dg-engine",
+		Short:   "IDDC runtime engine — enforces degradation contracts continuously",
+		Version: version.String(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			return run(policyPath, configPath)
@@ -58,7 +60,7 @@ func main() {
 
 	root.Flags().StringVar(&policyPath, "policy", "", "Path to compiled .dg bundle (required)")
 	root.Flags().StringVar(&configPath, "config", "config/dg-engine.yaml", "Path to dg-engine.yaml config")
-	root.MarkFlagRequired("policy")
+	_ = root.MarkFlagRequired("policy") // only fails if the flag is undefined
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -173,15 +175,20 @@ func run(policyPath, configPath string) error {
 		gateRoutes: gateSrv.Handler(),
 		audit:      auditLog,
 	}
-	go serveHTTP(&http.Server{Addr: cfg.Server.ControlAddr, Handler: control.routes()}, ctx)
+	go serveHTTP(&http.Server{
+		Addr:              cfg.Server.ControlAddr,
+		Handler:           control.routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}, ctx)
 	fmt.Printf("[control] listening on %s  — web console: http://localhost%s/\n",
 		cfg.Server.ControlAddr, cfg.Server.ControlAddr)
 
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", promhttp.Handler())
 	go serveHTTP(&http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Metrics.PrometheusPort),
-		Handler: metricsMux,
+		Addr:              fmt.Sprintf(":%d", cfg.Metrics.PrometheusPort),
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}, ctx)
 	fmt.Printf("[metrics] listening on :%d/metrics\n", cfg.Metrics.PrometheusPort)
 
@@ -254,9 +261,10 @@ func startServer(banner string, fn contextStarter, ctx context.Context) {
 func serveHTTP(srv *http.Server, ctx context.Context) {
 	go func() {
 		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		// ctx is already cancelled here; keep its values but give shutdown a fresh deadline.
+		shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 		defer cancel()
-		srv.Shutdown(shutCtx)
+		_ = srv.Shutdown(shutCtx) // best effort: the process is exiting
 	}()
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "server %s error: %v\n", srv.Addr, err)
@@ -270,7 +278,8 @@ func printBanner(b *compiler.CompiledBundle) {
 	fmt.Printf("║  IDDC — Intent-Driven Degradation Contracts      ║\n")
 	fmt.Printf("╚══════════════════════════════════════════════════╝\n")
 	fmt.Printf("  service : %s\n", b.Service)
-	fmt.Printf("  version : %s\n", b.Version)
+	fmt.Printf("  policy  : v%s\n", b.Version)
+	fmt.Printf("  engine  : %s\n", version.Get())
 	fmt.Printf("  tiers   : %d\n", len(b.Tiers))
 	fmt.Printf("  signals : %d\n\n", len(b.SignalSources))
 	fmt.Println("  Tier ladder (most degraded matching tier wins):")

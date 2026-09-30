@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"iddc/pkg/compiler"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/compiler"
 )
 
 // TierState is the current state served to application code.
@@ -103,7 +103,7 @@ func NewServer(addr, authToken string) *Server {
 	s.mux.HandleFunc("/tier", s.handleTier)
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/override", s.handleOverride)
-	s.server = &http.Server{Addr: addr, Handler: s.mux}
+	s.server = &http.Server{Addr: addr, Handler: s.mux, ReadHeaderTimeout: 5 * time.Second}
 	return s
 }
 
@@ -145,9 +145,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Start(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// ctx is already cancelled here; keep its values but give shutdown a fresh deadline.
+		shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		s.server.Shutdown(shutCtx)
+		_ = s.server.Shutdown(shutCtx) // best effort: the process is exiting
 	}()
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("sidecar server: %w", err)

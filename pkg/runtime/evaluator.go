@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"iddc/pkg/compiler"
-	"iddc/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/compiler"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
 )
 
 // EvaluatorConfig holds hysteresis durations.

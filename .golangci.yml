@@ -1,52 +1,37 @@
+version: "2"
+
 run:
-  timeout: 5m
   tests: true
 
 linters:
   enable:
-    - govet
-    - errcheck
-    - staticcheck
-    - unused
-    - gosimple
-    - ineffassign
-    - typecheck
-    - gosec
     - bodyclose
-  disable:
-    - wrapcheck
-    - varnamelen
-    - exhaustive
-    - exhaustruct
-    - gochecknoglobals
-    - gochecknoinits
-    - gomnd
-    - mnd
-    - funlen
-    - cyclop
-    - gocognit
-    - gocyclo
-    - maintidx
-    - nlreturn
-    - wsl
-    - godot
-    - godox
-    - lll
-    - nestif
-    - paralleltest
-    - testpackage
-    - thelper
-    - noctx
+    - gosec
+  settings:
+    errcheck:
+      # Writing an HTTP response body can only fail if the client went away;
+      # there is nothing useful to do with that error.
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (*encoding/json.Encoder).Encode
+        - io.Copy
+    gosec:
+      excludes:
+        - G402 # TLS InsecureSkipVerify — kubeconfig opt-in only
+        - G107 # URL from variable — intentional in the HTTP signal fetcher
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
 
-linters-settings:
-  gosec:
-    excludes:
-      - G402  # TLS InsecureSkipVerify — kubeconfig opt-in only
-      - G107  # URL from variable — intentional in HTTP fetcher
-
-issues:
-  exclude-rules:
-    - path: "_test\\.go"
-      linters:
-        - gosec
-        - errcheck
+formatters:
+  enable:
+    - gofmt

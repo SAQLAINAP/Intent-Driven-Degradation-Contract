@@ -1,14 +1,15 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}-engine
+  name: {{ include "dg.fullname" . }}
+  labels:
+    {{- include "dg.labels" . | nindent 4 }}
 spec:
   selector:
-    app: dg-engine
+    {{- include "dg.selector" . | nindent 4 }}
   ports:
-    - name: metrics
-      port: {{ .Values.metrics.port }}
-      targetPort: metrics
-    - name: sidecar
-      port: {{ .Values.sidecar.port }}
-      targetPort: {{ .Values.sidecar.port }}
+    {{- range $name, $port := .Values.ports }}
+    - name: {{ $name }}
+      port: {{ $port }}
+      targetPort: {{ $name }}
+    {{- end }}

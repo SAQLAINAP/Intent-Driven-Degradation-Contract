@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,7 +33,7 @@ func NewCallbackServer(addr string, gate *HumanGate) *CallbackServer {
 	mux.HandleFunc("/gate/status", cs.handleStatus)
 
 	cs.handler = mux
-	cs.server = &http.Server{Addr: addr, Handler: mux}
+	cs.server = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	return cs
 }
 
@@ -46,9 +47,10 @@ func (cs *CallbackServer) Handler() http.Handler {
 func (cs *CallbackServer) Start(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// ctx is already cancelled here; keep its values but give shutdown a fresh deadline.
+		shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		cs.server.Shutdown(shutCtx)
+		_ = cs.server.Shutdown(shutCtx) // best effort: the process is exiting
 	}()
 	if err := cs.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("gate callback server: %w", err)
@@ -74,7 +76,7 @@ func (cs *CallbackServer) handleApprove(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := cs.gate.Respond(GateResponse{Action: "approve", Token: req.Token}); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		respondError(w, err)
 		return
 	}
 	writeJSON(w, map[string]string{"status": "approved"})
@@ -106,7 +108,7 @@ func (cs *CallbackServer) handleOverride(w http.ResponseWriter, r *http.Request)
 		DurationMin: req.DurationMin,
 		Token:       req.Token,
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		respondError(w, err)
 		return
 	}
 	writeJSON(w, map[string]string{"status": "overridden", "target_tier": req.TargetTier})
@@ -132,7 +134,7 @@ func (cs *CallbackServer) handleEscalate(w http.ResponseWriter, r *http.Request)
 		Message: req.Message,
 		Token:   req.Token,
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		respondError(w, err)
 		return
 	}
 	writeJSON(w, map[string]string{"status": "escalated"})
@@ -140,6 +142,15 @@ func (cs *CallbackServer) handleEscalate(w http.ResponseWriter, r *http.Request)
 
 func (cs *CallbackServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, cs.gate.Status())
+}
+
+// respondError maps Respond errors to HTTP status codes.
+func respondError(w http.ResponseWriter, err error) {
+	status := http.StatusConflict // no gate pending / already answered
+	if errors.Is(err, ErrUnauthorized) {
+		status = http.StatusUnauthorized
+	}
+	http.Error(w, err.Error(), status)
 }
 
 // decodeOptional decodes a JSON body if one is present. An empty body is

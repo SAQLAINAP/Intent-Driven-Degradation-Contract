@@ -80,8 +80,10 @@ func (l *Logger) Log(e Event) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.w.Write(data)
-	l.w.Write([]byte("\n"))
+	if _, err := l.w.Write(append(data, '\n')); err != nil {
+		// An audit trail that silently loses events is worse than a noisy one.
+		fmt.Fprintf(os.Stderr, "audit: write failed: %v\n", err)
+	}
 	l.recent = append(l.recent, e)
 	if len(l.recent) > recentCap {
 		l.recent = l.recent[len(l.recent)-recentCap:]

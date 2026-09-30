@@ -36,7 +36,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"iddc/pkg/enforcement/fallback"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/internal/version"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/enforcement/fallback"
 )
 
 // sidecarFlags is fetched from the sidecar /flags endpoint.
@@ -183,7 +184,7 @@ func run(addr, sidecarURL, engineURL string) error {
 			var q struct {
 				Depth int `json:"depth"`
 			}
-			json.NewDecoder(resp.Body).Decode(&q)
+			_ = json.NewDecoder(resp.Body).Decode(&q) // depth is informational only
 			resp.Body.Close()
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
@@ -235,7 +236,13 @@ func run(addr, sidecarURL, engineURL string) error {
 	fmt.Printf("demo-app  listening on %s\n", addr)
 	fmt.Printf("sidecar   polling   %s/flags\n", sidecarURL)
 	fmt.Printf("engine    inject    %s/inject\n\n", engineURL)
-	return http.ListenAndServe(addr, mux)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 // ─── response helpers ─────────────────────────────────────────────────────────
@@ -408,8 +415,9 @@ func main() {
 	var engineURL string
 
 	root := &cobra.Command{
-		Use:   "demo-app",
-		Short: "IDDC demo e-commerce app — honours degradation tier flags",
+		Use:     "demo-app",
+		Short:   "IDDC demo e-commerce app — honours degradation tier flags",
+		Version: version.String(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(addr, sidecarURL, engineURL)
 		},

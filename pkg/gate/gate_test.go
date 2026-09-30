@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"iddc/pkg/audit"
-	"iddc/pkg/gate"
-	"iddc/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/audit"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/gate"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
 )
 
 func newGate() *gate.HumanGate {
@@ -211,6 +211,31 @@ func TestCallbackServer_StatusAndValidation(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/gate/approve", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("approve with empty body = %d, want 200", rec.Code)
+	}
+	<-done
+}
+
+// The callback API distinguishes a bad token (401) from "nothing to answer" (409).
+func TestCallbackServer_StatusCodes(t *testing.T) {
+	g := gate.NewHumanGate(gate.Config{AuthToken: "secret"}, audit.NewLogger(&bytes.Buffer{}))
+	h := gate.NewCallbackServer(":0", g).Handler()
+	post := func(body string) int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/gate/approve", strings.NewReader(body)))
+		return rec.Code
+	}
+	if code := post(`{}`); code != http.StatusUnauthorized {
+		t.Errorf("missing token = %d, want 401", code)
+	}
+	if code := post(`{"token":"secret"}`); code != http.StatusConflict {
+		t.Errorf("valid token, nothing pending = %d, want 409", code)
+	}
+	done := fireAsync(t, g, context.Background(), "critical", spec(5*time.Second, "execute_policy"))
+	if code := post(`{"token":"wrong"}`); code != http.StatusUnauthorized {
+		t.Errorf("wrong token = %d, want 401", code)
+	}
+	if code := post(`{"token":"secret"}`); code != http.StatusOK {
+		t.Errorf("valid token = %d, want 200", code)
 	}
 	<-done
 }

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"iddc/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
 )
 
 // analyzeBlast runs Stage 3: builds the dependency graph, detects cycles via DFS,

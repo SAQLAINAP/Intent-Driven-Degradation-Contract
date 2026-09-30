@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"iddc/pkg/compiler"
-	"iddc/pkg/enforcement/sidecar"
-	"iddc/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/compiler"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/enforcement/sidecar"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
 )
 
 func newSrv() *sidecar.Server {

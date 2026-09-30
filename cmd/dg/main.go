@@ -18,14 +18,16 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"iddc/pkg/compiler"
-	"iddc/pkg/policy"
-	"iddc/pkg/runtime"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/internal/version"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/compiler"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/runtime"
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "dg",
-	Short: "IDDC — Intent-Driven Degradation Contracts compiler and tool",
+	Use:     "dg",
+	Short:   "IDDC — Intent-Driven Degradation Contracts compiler and tool",
+	Version: version.String(),
 	// Arguments are validated before this hook runs, so usage is still printed
 	// for bad invocations but not for runtime errors such as a failed compile.
 	PersistentPreRun: func(cmd *cobra.Command, args []string) { cmd.SilenceUsage = true },
@@ -286,7 +288,7 @@ func versionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print dg version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("dg v0.1.0 — Intent-Driven Degradation Contracts")
+			fmt.Println("dg " + version.String())
 		},
 	}
 }

@@ -1,0 +1,52 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - typecheck
+    - gosec
+    - bodyclose
+  disable:
+    - wrapcheck
+    - varnamelen
+    - exhaustive
+    - exhaustruct
+    - gochecknoglobals
+    - gochecknoinits
+    - gomnd
+    - mnd
+    - funlen
+    - cyclop
+    - gocognit
+    - gocyclo
+    - maintidx
+    - nlreturn
+    - wsl
+    - godot
+    - godox
+    - lll
+    - nestif
+    - paralleltest
+    - testpackage
+    - thelper
+    - noctx
+
+linters-settings:
+  gosec:
+    excludes:
+      - G402  # TLS InsecureSkipVerify — kubeconfig opt-in only
+      - G107  # URL from variable — intentional in HTTP fetcher
+
+issues:
+  exclude-rules:
+    - path: "_test\\.go"
+      linters:
+        - gosec
+        - errcheck

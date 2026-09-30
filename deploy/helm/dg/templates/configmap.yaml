@@ -1,6 +1,16 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: dg-policy
+  name: {{ include "dg.fullname" . }}-config
+  labels:
+    {{- include "dg.labels" . | nindent 4 }}
 data:
-  policy.dg: ""  # populated at deploy time via: kubectl create configmap dg-policy --from-file=policy.dg
+  dg-engine.yaml: |
+    server:
+      control_addr: ":{{ .Values.ports.control }}"
+      sidecar_addr: ":{{ .Values.ports.sidecar }}"
+      gate_addr: ":{{ .Values.ports.gate }}"
+    {{- $cfg := deepCopy .Values.engineConfig }}
+    {{- $_ := set $cfg.metrics "prometheus_port" .Values.ports.metrics }}
+    {{- if not $cfg.k8s.namespace }}{{ $_ := set $cfg.k8s "namespace" .Release.Namespace }}{{ end }}
+    {{- toYaml $cfg | nindent 4 }}

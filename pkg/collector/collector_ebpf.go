@@ -26,7 +26,6 @@ type SysCollector struct {
 	lastCPU *cpuSample
 	lastNet map[string]*netSample
 	lastTCP *tcpSample
-	lastAt  time.Time
 	iface   string // primary network interface (auto-detected on first call)
 }
 
@@ -92,7 +91,7 @@ func (c *SysCollector) memPressure() (float64, error) {
 
 type cpuSample struct {
 	user, nice, system, idle, iowait, irq, softirq, steal int64
-	at                                                     time.Time
+	at                                                    time.Time
 }
 
 func readCPUSample() (*cpuSample, error) {
@@ -279,9 +278,9 @@ func readTCPSample() (*tcpSample, error) {
 		return v
 	}
 	return &tcpSample{
-		outSegs:    get("OutSegs"),
+		outSegs:     get("OutSegs"),
 		retransSegs: get("RetransSegs"),
-		at:         time.Now(),
+		at:          time.Now(),
 	}, nil
 }
 

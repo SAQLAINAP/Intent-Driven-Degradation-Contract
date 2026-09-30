@@ -2,68 +2,92 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
-    branches: ["**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    name: Lint, Vet, Test
+    name: Vet & test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
           cache: true
-
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l cmd pkg internal)"
+          if [ -n "$unformatted" ]; then echo "$unformatted"; echo "::error::files need gofmt (make fmt)"; exit 1; fi
+      - name: go mod tidy
+        run: go mod tidy -diff
       - name: go vet
-        run: go vet ./...
-
+        run: go vet ./... && GOOS=linux go vet -tags ebpf ./pkg/collector/
       - name: go test (race detector)
         run: go test -race -coverprofile=coverage.out ./...
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -1
 
-      - name: build dg binary
-        run: go build ./cmd/dg
-
-      - name: build dg-engine binary
-        run: go build ./cmd/dg-engine
-
-      - name: build demo-app binary
-        run: go build ./cmd/demo-app
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
 
   smoke:
     name: End-to-end smoke test
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
           cache: true
       - name: smoke test (CLI demo set + live engine, gate, queue, demo app)
         run: bash scripts/smoke.sh
+
+  release-dry-run:
+    name: Release packaging (dry run)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: VERSION=ci bash scripts/release.sh && ls -l dist
 
   docker:
     name: Docker image builds
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: docker build
-        run: docker build -f deploy/docker/Dockerfile -t iddc-demo:ci .
-
-  validate-example:
-    name: Validate Example Policy
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-          cache: true
-      - name: validate example policy
-        run: make validate-example
+        run: docker build -f deploy/docker/Dockerfile -t iddc:ci .
+      - name: image starts and serves the console
+        run: |
+          docker run -d --name iddc -p 8080:8080 -p 9191:9191 iddc:ci
+          # The demo script starts the engine first and the shop a moment later.
+          for i in $(seq 1 30); do curl -sf localhost:8080/health >/dev/null && break; sleep 1; done
+          curl -sf localhost:9191/ | grep -q "IDDC Console"
+          curl -sf localhost:8080/health
+          test "$(docker exec iddc id -u)" != 0
+          docker rm -f iddc

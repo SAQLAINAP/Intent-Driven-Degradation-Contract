@@ -1,0 +1,9 @@
+dg-engine is starting as {{ include "dg.fullname" . }}.
+
+It needs the compiled policy ConfigMap "{{ .Values.policy.configMapName }}":
+  dg compile degradation.yaml -o policy.dg
+  kubectl -n {{ .Release.Namespace }} create configmap {{ .Values.policy.configMapName }} --from-file=policy.dg
+
+Feature flags for your apps:  http://{{ include "dg.fullname" . }}.{{ .Release.Namespace }}:{{ .Values.ports.sidecar }}/flags
+Web console (keep internal):  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "dg.fullname" . }} {{ .Values.ports.control }}
+                              then open http://localhost:{{ .Values.ports.control }}/

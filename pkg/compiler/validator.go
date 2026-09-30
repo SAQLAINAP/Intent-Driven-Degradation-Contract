@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strconv"
 
-	"iddc/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
 )
 
 // validate runs Stage 2 semantic checks on the parsed policy.
@@ -118,7 +118,7 @@ func emptyRanges(c policy.Condition) []string {
 		if !ok {
 			continue
 		}
-		if iv.lo > iv.hi || (iv.lo == iv.hi && !(iv.loIncl && iv.hiIncl)) {
+		if iv.lo > iv.hi || (iv.lo == iv.hi && (!iv.loIncl || !iv.hiIncl)) {
 			out = append(out, id)
 		}
 	}

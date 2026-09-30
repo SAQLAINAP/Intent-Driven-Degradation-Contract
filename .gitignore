@@ -1,5 +1,6 @@
-# Build output (make build-all writes here)
+# Build output (make build-all / make release-local write here)
 /bin/
+/dist/
 
 # Binaries from older layouts that built into the repo root
 /dg

@@ -127,7 +127,7 @@ type minimalKubeconfig struct {
 }
 
 func parseKubeconfig(path string) (*k8sClient, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path comes from the operator's own engine config
 	if err != nil {
 		return nil, fmt.Errorf("reading kubeconfig %s: %w", path, err)
 	}

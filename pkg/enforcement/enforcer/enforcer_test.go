@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"iddc/pkg/audit"
-	"iddc/pkg/compiler"
-	"iddc/pkg/enforcement/enforcer"
-	"iddc/pkg/enforcement/sidecar"
-	"iddc/pkg/enforcement/writequeue"
-	"iddc/pkg/gate"
-	"iddc/pkg/policy"
-	"iddc/pkg/runtime"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/audit"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/compiler"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/enforcement/enforcer"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/enforcement/sidecar"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/enforcement/writequeue"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/gate"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/runtime"
 )
 
 const ladder = `

@@ -1,38 +1,52 @@
+# Runs dg-engine as its own Deployment. Applications read feature flags from
+# the "sidecar" port of this Service (or run the engine as a sidecar container
+# in their own pod using the same image and arguments).
+
 replicaCount: 1
 
 image:
-  repository: ghcr.io/youorg/dg-engine
-  tag: latest
+  repository: ghcr.io/saqlainap/iddc
+  tag: ""            # defaults to the chart appVersion
   pullPolicy: IfNotPresent
 
-service:
-  name: api-gateway
-  port: 8080
+# The compiled policy is supplied as a ConfigMap you create yourself:
+#   dg compile degradation.yaml -o policy.dg
+#   kubectl create configmap dg-policy --from-file=policy.dg
+policy:
+  configMapName: dg-policy
 
-sidecar:
-  port: 8081
+# Optional Secret with SLACK_WEBHOOK_URL, PAGERDUTY_ROUTING_KEY and GATE_AUTH_TOKEN.
+# Missing keys are simply left unset.
+secretName: dg-secrets
 
-metrics:
-  port: 9090
+ports:
+  control: 9191   # control API + web console — keep internal
+  sidecar: 8081   # /flags for applications
+  gate: 9292      # human-gate callbacks
+  metrics: 9090   # Prometheus
 
-config:
+# Rendered verbatim into dg-engine.yaml. ${VAR} placeholders are expanded
+# from the container environment (see secretName).
+engineConfig:
+  signal_bus:
+    tick_interval: 2s
+    stale_signal_timeout: 30s
+    mode: auto
   evaluator:
-    upHysteresis: 30s
-    downHysteresis: 90s
-  signalBus:
-    tickInterval: 2s
-    staleSignalTimeout: 30s
-  k8s:
-    namespace: default
-    leaderElection: false
+    up_hysteresis: 30s
+    down_hysteresis: 90s
+  gate:
+    slack_webhook_url: ${SLACK_WEBHOOK_URL}
+    pagerduty_routing_key: ${PAGERDUTY_ROUTING_KEY}
+    auth_token: ${GATE_AUTH_TOKEN}
+    callback_base_url: ""
+  metrics:
+    prometheus_url: ""   # e.g. http://prometheus-server.monitoring:80
   audit:
     output: stdout
-
-policyBundle: ""  # path to policy.dg; set at install time
-
-secrets:
-  slackWebhookUrl: ""
-  gateAuthToken: ""
+  k8s:
+    namespace: ""        # defaults to the release namespace
+    deployment_name: ""  # set to enable replica/HPA/rollout enforcement
 
 resources:
   limits:

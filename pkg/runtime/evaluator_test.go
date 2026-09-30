@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"iddc/pkg/compiler"
-	"iddc/pkg/policy"
-	"iddc/pkg/runtime"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/compiler"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/runtime"
 )
 
 // buildBundle creates a compiled bundle from inline YAML for test use.

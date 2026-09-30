@@ -8,13 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"iddc/pkg/metrics"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/metrics"
 )
 
 // Write represents a single deferred write operation.
 type Write struct {
-	ID        string
-	Payload   []byte
+	ID         string
+	Payload    []byte
 	EnqueuedAt time.Time
 }
 

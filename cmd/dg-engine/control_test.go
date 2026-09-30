@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"iddc/pkg/compiler"
-	"iddc/pkg/policy"
-	"iddc/pkg/runtime"
-	"iddc/pkg/sigfetch"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/compiler"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/runtime"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/sigfetch"
 )
 
 func exampleBundle(t *testing.T) *compiler.CompiledBundle {

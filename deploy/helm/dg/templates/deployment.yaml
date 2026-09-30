@@ -1,43 +1,64 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-engine
+  name: {{ include "dg.fullname" . }}
   labels:
-    app: dg-engine
+    {{- include "dg.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: dg-engine
+      {{- include "dg.selector" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: dg-engine
+        {{- include "dg.selector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
+      securityContext:
+        runAsNonRoot: true
       containers:
         - name: dg-engine
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/bin/dg-engine"]
+          args:
+            - --policy=/etc/dg/policy/policy.dg
+            - --config=/etc/dg/config/dg-engine.yaml
           ports:
-            - containerPort: {{ .Values.metrics.port }}
-              name: metrics
+            - { name: control, containerPort: {{ .Values.ports.control }} }
+            - { name: sidecar, containerPort: {{ .Values.ports.sidecar }} }
+            - { name: gate, containerPort: {{ .Values.ports.gate }} }
+            - { name: metrics, containerPort: {{ .Values.ports.metrics }} }
           env:
-            - name: SLACK_WEBHOOK_URL
+            {{- range $key := list "SLACK_WEBHOOK_URL" "PAGERDUTY_ROUTING_KEY" "GATE_AUTH_TOKEN" }}
+            - name: {{ $key }}
               valueFrom:
                 secretKeyRef:
-                  name: dg-secrets
-                  key: SLACK_WEBHOOK_URL
-            - name: GATE_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: dg-secrets
-                  key: GATE_AUTH_TOKEN
+                  name: {{ $.Values.secretName }}
+                  key: {{ $key }}
+                  optional: true
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /health, port: sidecar }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: sidecar }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           volumeMounts:
-            - name: policy
-              mountPath: /etc/dg
+            - { name: policy, mountPath: /etc/dg/policy, readOnly: true }
+            - { name: config, mountPath: /etc/dg/config, readOnly: true }
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
         - name: policy
           configMap:
-            name: dg-policy
+            name: {{ .Values.policy.configMapName }}
+        - name: config
+          configMap:
+            name: {{ include "dg.fullname" . }}-config

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"iddc/pkg/compiler"
-	"iddc/pkg/metrics"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/compiler"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/metrics"
 )
 
 // Engine wires the SignalBus → TierEvaluator → Dispatcher together.

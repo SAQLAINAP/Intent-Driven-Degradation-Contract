@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"iddc/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
 )
 
 // CompiledBundle is the serialized artifact produced by the compiler.

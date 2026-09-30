@@ -1,6 +1,10 @@
 apiVersion: v2
 name: dg
-description: Intent-Driven Degradation Contracts — runtime engine
+description: IDDC (Intent-Driven Degradation Contracts) runtime engine
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+home: https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract
+sources:
+  - https://github.com/SAQLAINAP/Intent-Driven-Degradation-Contract
+keywords: [resilience, degradation, sre, feature-flags, load-shedding]

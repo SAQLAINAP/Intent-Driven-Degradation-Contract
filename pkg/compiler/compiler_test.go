@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"iddc/pkg/compiler"
-	"iddc/pkg/policy"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/compiler"
+	"github.com/SAQLAINAP/Intent-Driven-Degradation-Contract/pkg/policy"
 )
 
 // helper: load policy from inline YAML bytes and compile.
