@@ -41,6 +41,7 @@
 [Testing](#testing) ·
 [Repository layout](#repository-layout) ·
 [Known limitations](#known-limitations) ·
+[Walkthrough](#walkthrough-a-bookshop-flash-sale) ·
 [Contributing](#contributing) ·
 [Roadmap](docs/ROADMAP.md)
 
@@ -72,6 +73,8 @@ degradation.yaml ──► dg compile ──► policy.dg ──► dg-engine
                                                   ├─ gate callbacks :9292  (Slack / PagerDuty / curl)
                                                   └─ Prometheus metrics :9090, NDJSON audit log
 ```
+
+New to IDDC? The [bookshop walkthrough](#walkthrough-a-bookshop-flash-sale) tells the whole story with diagrams.
 
 The engine follows five rules:
 
@@ -151,7 +154,7 @@ Captured from a live engine + demo shop session (the console was driven by click
 |---|---|
 | **Console, `hot` tier.** Ladder, signals, flags and the event log (the gate view is at the top of this page).<br>![console overview](docs/screenshots/console-overview.png) | **After approving the gate.** `critical` is enforced (read-only), features are off, writes are buffered.<br>![console in critical](docs/screenshots/console-critical.png) |
 | **Demo shop in `critical`.** Reacts to the sidecar's mode and flags.<br>![demo shop critical](docs/screenshots/demo-shop-critical.png) | **Demo shop in `survival`.** Static 503 fallback page.<br>![demo shop survival](docs/screenshots/demo-shop-survival.png) |
-| **Policy lab.** Validates pasted YAML and flags a tier gap.<br>![policy lab](docs/screenshots/console-policy-lab.png) | **`make smoke`.** 73 end-to-end checks.<br>![smoke test output](docs/screenshots/terminal-smoke.png) |
+| **Policy lab.** Validates pasted YAML and flags a tier gap.<br>![policy lab](docs/screenshots/console-policy-lab.png) | **`make smoke`.** End-to-end checks against real binaries, all green.<br>![smoke test output](docs/screenshots/terminal-smoke.png) |
 
 Terminal snaps: [`dg` diagnostics and simulate](#compiler-diagnostics), and [a `dg-engine` session with a gate held and then approved](#human-gate).
 
@@ -452,7 +455,7 @@ make smoke        # end-to-end smoke test (needs curl + python3)
 
 A full run is pictured in [Screenshots](#screenshots).
 
-`scripts/smoke.sh` runs 73 checks against real binaries:
+`scripts/smoke.sh` runs its checks against real binaries:
 
 - **CLI:** `dg validate` against every policy in `examples/demo-set/` (exit codes and exact diagnostics), `compile`/`inspect`/`graph`, corrupt-bundle handling, and a `simulate` matrix.
 - **Runtime:** it starts `dg-engine` and the demo app, then walks the whole ladder over HTTP:
@@ -528,7 +531,9 @@ These are known gaps, and good first contributions. Each has an entry in the [ro
 │   ├── collector/           /proc collector (+ eBPF variant, build tag linux && ebpf)
 │   └── audit/ metrics/ config/
 ├── config/                  example policy + engine configs (prod and dev)
-├── examples/demo-set/       policies exercising every compiler diagnostic + the runtime smoke policy
+├── examples/
+│   ├── demo-set/            policies exercising every compiler diagnostic + the runtime smoke policy
+│   └── bookshop/            the policy from the README walkthrough
 ├── deploy/
 │   ├── docker/              Dockerfile for the demo image
 │   ├── observability/       docker-compose for Prometheus + Grafana, with provisioning
@@ -547,6 +552,175 @@ These are known gaps, and good first contributions. Each has an entry in the [ro
 ```
 
 Build output (`bin/`, `dist/`) is gitignored. `make clean` removes it, along with binaries that older versions of the Makefile left in the root.
+
+---
+
+## Walkthrough: a bookshop flash sale
+
+This is an illustrative story, start to finish. A small online bookshop API adopts IDDC, then gets hit by a flash sale. The policy is in [`examples/bookshop/degradation.yaml`](examples/bookshop/degradation.yaml); every command output below is real.
+
+### The big picture
+
+```mermaid
+flowchart LR
+    subgraph design ["Design time (code review + CI)"]
+        Y["degradation.yaml"] --> V{"dg validate"}
+        V -- "errors" --> Y
+        V -- "ok" --> C["dg compile → policy.dg"]
+    end
+    subgraph run ["Runtime"]
+        P[("Prometheus")] -- "rps, db_latency_p99" --> E["dg-engine"]
+        C --> E
+        E -- "GET /flags" --> A["bookshop-api"]
+        E -- "gate opened" --> O["On-call engineer<br/>(Slack / PagerDuty / console)"]
+        O -- "approve · override · escalate" --> E
+        A -- "orders in read-only mode" --> Q[["write queue"]]
+        Q -. "drained on recovery" .-> A
+    end
+    U(("Customers")) --> A
+```
+
+### 1. Write the contract
+
+Next to the deployment files, the team adds `degradation.yaml`. In plain terms it says: shed extras when busy, and go read-only when overloaded, but only after a human has had a chance to say no.
+
+```yaml
+service: bookshop-api
+version: "1.0.0"
+
+signals:
+  - id: rps                  # requests per second
+    source: prometheus
+  - id: db_latency_p99       # slowest 1% of DB queries, in ms
+    source: prometheus
+
+tiers:                       # least → most degraded
+  - name: normal
+    when: { rps: { lt: 500 } }
+    behavior: { mode: full_service }
+
+  - name: busy
+    when: { rps: { gte: 500, lt: 2000 } }
+    behavior:
+      mode: full_service
+      disable: [recommendations, reviews]      # shed the expensive extras
+
+  - name: overloaded
+    when:
+      any_of:
+        - rps: { gte: 2000 }
+        - db_latency_p99: { gte: 1500 }
+    human_gate: { wait: 60s, on_timeout: execute_policy }
+    behavior:
+      mode: read_only                          # browsing works, orders are buffered
+      queue_writes: { max_depth: 5000, ttl: 10m }
+```
+
+Read as a state machine, the ladder looks like this (thresholds must hold for the hysteresis window before a move happens: 30s up and 90s down by default):
+
+```mermaid
+stateDiagram-v2
+    state "human gate: apps stay on busy" as gate
+    [*] --> normal
+    normal --> busy: rps ≥ 500
+    busy --> gate: rps ≥ 2000 or db p99 ≥ 1500
+    gate --> overloaded: approved, or 60s timeout (execute_policy)
+    gate --> busy: override / signals calm down
+    overloaded --> busy: rps < 2000 and db p99 < 1500
+    busy --> normal: rps < 500
+```
+
+### 2. The compiler catches a mistake before it ships
+
+Someone misspells a signal name in a later change. CI fails the build:
+
+```text
+$ dg validate degradation.yaml
+  ERROR   [undeclared] Tier "overloaded" references signal "db_latancy_p99" but it is not declared in signals:
+Compilation failed with 1 error(s), 0 warning(s).
+```
+
+Without the check, the slow-database trigger would have silently never fired. Once the typo is fixed:
+
+```text
+$ dg compile degradation.yaml -o policy.dg
+✓  compiled → policy.dg  (service=bookshop-api  tiers=3)
+
+$ dg simulate degradation.yaml --signal rps:300 --signal db_latency_p99:1800
+Matched tier: overloaded        ← a slow database alone is enough
+  mode: read_only
+```
+
+> Tier-gap detection only analyses ladders where every tier checks the same single signal. Because `overloaded` combines two signals, a gap in the `rps` bands of this policy would **not** be reported. `dg simulate` and the console's policy lab are the way to probe compound ladders (see [Known limitations](#known-limitations)).
+
+### 3. Connect the app
+
+`dg-engine` runs next to the API and serves feature flags on `:8081`. The app asks before doing optional work, and it reacts to `mode` and `features`, never to tier names:
+
+```go
+flags := getFlags("http://localhost:8081/flags")
+// in busy: {"tier":"busy","mode":"full_service","features":{"recommendations":false,"reviews":false}}
+
+if flags.Features["recommendations"] { showRecommendations() }
+if flags.Mode == "read_only" { bufferOrder() }   // POST http://dg-engine:9191/write
+```
+
+### 4. Sale day
+
+| Time | What's happening | What IDDC does | What customers see |
+|---|---|---|---|
+| 09:00 | 200 rps, DB fast | **normal** | Everything on |
+| 09:05 | Sale starts: 900 rps | Proposes **busy** and waits 30s to be sure it isn't a blip | Everything still on |
+| 09:05:30 | Still 900 rps | Applies **busy**; turns off `recommendations` and `reviews` | Fast pages, no "you may also like" |
+| 09:10 | 2,400 rps, DB slowing | Proposes **overloaded**, a gated tier, so it **holds**: apps stay on `busy`, on-call is notified, and the console shows `busy → overloaded` with a 60s countdown | No change yet |
+| 09:10:20 | On-call clicks **Approve** | Applies **overloaded**: `read_only`, write queue on. (With no answer, `execute_policy` would apply it at 60s anyway.) | Browsing works; "Order received, processing shortly" |
+| 09:10–09:25 | Orders keep arriving | Orders are buffered (up to 5,000, kept 10 min) instead of hammering the database | Nobody sees an error page |
+| 09:25 | Traffic falls to 700 rps | Waits 90s, then drops to **busy** and **drains the queue** | Checkout works normally again |
+| 09:40 | Back to 150 rps | 90s later: **normal** | Everything back on |
+
+What the on-call engineer could have done at 09:10 instead:
+
+```mermaid
+flowchart TD
+    P["Evaluator: signals match 'overloaded'"] --> G{{"Human gate open<br/>apps stay on 'busy'<br/>Slack · PagerDuty · console"}}
+    G -- "Approve, or 60s pass<br/>(on_timeout: execute_policy)" --> O["overloaded<br/>read_only + queue writes"]
+    G -- "Override → busy for 15 min<br/>(the DB team says it's fine)" --> B["stay on busy, evaluator locked"]
+    G -- "Escalate" --> S["most degraded tier, locked"]
+    G -- "Signals calm down first" --> X["gate superseded, nothing applied"]
+```
+
+### 5. The paper trail
+
+Every step is recorded as one NDJSON line in the audit log. This is the actual output from replaying the story:
+
+```json
+{"event":"gate_fired","service":"bookshop-api","tier":"overloaded","from_tier":"busy",…}
+{"event":"tier_transition","service":"bookshop-api","from_tier":"busy","to_tier":"overloaded","reason":"gate approved",…}
+{"event":"queue_drained","service":"bookshop-api","tier":"busy","count":3,…}
+```
+
+Prometheus has the same story as metrics (`dg_current_tier`, `dg_gate_events_total{outcome="approved"}`, `dg_write_queue_depth`), and the console's event log shows it live.
+
+> **Heads-up:** draining currently hands the buffered writes back to the engine, which counts and logs them. Replaying them into your database is up to your integration (it's on the [roadmap](docs/ROADMAP.md)).
+
+### Replay it yourself
+
+```bash
+make build-all
+bin/dg compile examples/bookshop/degradation.yaml -o bin/bookshop.dg
+bin/dg-engine --policy bin/bookshop.dg --config config/dg-engine-dev.yaml   # 3s/5s hysteresis
+# in another terminal, play the sale:
+curl -XPOST localhost:9191/inject -d '{"rps":900}'                          # → busy
+curl -XPOST localhost:9191/inject -d '{"rps":2400,"db_latency_p99":900}'    # → gate opens
+curl -XPOST localhost:9292/gate/approve                                     # → overloaded
+curl -XPOST localhost:9191/write -d '{"id":"order-1"}'                      # buffered order
+curl -XPOST localhost:9191/inject -d '{"rps":700,"db_latency_p99":40}'      # → busy, queue drained
+curl -XPOST localhost:9191/inject -d '{"rps":150}'                          # → normal
+```
+
+Or open http://localhost:9191 and click through the same story in the console.
+
+The point: the hard decision ("at 2,000 rps or a slow database we go read-only and buffer orders, but a human gets 60 seconds to say no") was made calmly in a code review, not by someone half-awake mid-incident. IDDC then carries it out the same way every time.
 
 ---
 

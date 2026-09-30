@@ -1,0 +1,30 @@
+# The policy from the README walkthrough ("A bookshop flash sale").
+service: bookshop-api
+version: "1.0.0"
+
+signals:
+  - id: rps                  # requests per second
+    source: prometheus
+  - id: db_latency_p99       # slowest 1% of DB queries, in ms
+    source: prometheus
+
+tiers:                       # least → most degraded
+  - name: normal
+    when: { rps: { lt: 500 } }
+    behavior: { mode: full_service }
+
+  - name: busy
+    when: { rps: { gte: 500, lt: 2000 } }
+    behavior:
+      mode: full_service
+      disable: [recommendations, reviews]      # shed the expensive extras
+
+  - name: overloaded
+    when:
+      any_of:
+        - rps: { gte: 2000 }
+        - db_latency_p99: { gte: 1500 }
+    human_gate: { wait: 60s, on_timeout: execute_policy }
+    behavior:
+      mode: read_only                          # browsing works, orders are buffered
+      queue_writes: { max_depth: 5000, ttl: 10m }

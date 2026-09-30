@@ -95,6 +95,22 @@ for needle in "unknown mode \"readonly\"" "on_timeout \"panic\"" "can never be t
 done
 grep -q "^Usage:" <<<"$out" && fail "compile errors should not dump CLI usage" || pass "no usage dump on compile errors"
 
+section "README walkthrough policy (examples/bookshop)"
+out="$("$DG" validate examples/bookshop/degradation.yaml 2>&1)"; grep -qF "is valid" <<<"$out" && pass "bookshop policy is valid" || fail "bookshop policy" "$out"
+sed 's/db_latency_p99: { gte: 1500 }/db_latancy_p99: { gte: 1500 }/' examples/bookshop/degradation.yaml >"$WORK/bookshop-typo.yaml"
+out="$("$DG" validate "$WORK/bookshop-typo.yaml" 2>&1)"; grep -qF '[undeclared]' <<<"$out" && pass "misspelled signal is caught" || fail "bookshop typo" "$out"
+while IFS='|' read -r signals want; do
+  args=()
+  for kv in $signals; do args+=(--signal "$kv"); done
+  got="$("$DG" simulate examples/bookshop/degradation.yaml "${args[@]}" | sed -n 's/^Matched tier: //p')"
+  expect "bookshop $signals → $want" "$want" "$got"
+done <<'EOF2'
+rps:200|normal
+rps:900|busy
+rps:2400|overloaded
+rps:300 db_latency_p99:1800|overloaded
+EOF2
+
 section "dg compile / inspect / graph"
 "$DG" compile config/example-degradation.yaml -o "$WORK/example.dg" >/dev/null && pass "compile example policy" || fail "compile example policy"
 # Capture output first: `cmd | grep -q` can SIGPIPE cmd, which pipefail reports as failure.

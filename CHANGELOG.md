@@ -11,10 +11,11 @@ First public release candidate.
 - Control API: `/api/status`, `/api/policy`, `/api/events`, `/api/validate`, `/api/simulate`, `/override/release`. Gate routes are mirrored on the control port.
 - Human-gate semantics: upward moves into gated tiers are held until approve, override, escalate or `on_timeout` (`execute_policy`, `hold`, `escalate`). A gate is superseded if signals move elsewhere.
 - Compiler checks for duplicate tiers, unknown `mode` / `on_timeout`, gates without `wait`, impossible ranges, and values above the top tier.
-- `examples/demo-set/` policies covering every diagnostic; `scripts/smoke.sh` end-to-end test (73 checks).
+- `examples/demo-set/` policies covering every diagnostic; `scripts/smoke.sh` end-to-end test.
 - Per-signal `query:` (PromQL), `poll_cadence`, `stale_signal_timeout`, `signal_bus.mode` (`auto` / `inject`) and configurable listen addresses.
 - `dg --version`, `dg-engine --version`; release archives for Linux, macOS and Windows; `ghcr.io/saqlainap/iddc` image; Helm chart in `deploy/helm/dg`.
 - LICENSE (MIT), CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, issue/PR templates, Dependabot.
+- README walkthrough ("A bookshop flash sale") with Mermaid diagrams; its policy lives in `examples/bookshop/` and is checked by the smoke test.
 
 ### Changed
 - **Breaking:** the Go module path is now `github.com/SAQLAINAP/Intent-Driven-Degradation-Contract` (was `iddc`).
